@@ -1,5 +1,7 @@
 const express = require('express');
 const { getPool } = require('../db/init');
+const { getValidAccessToken } = require('../auth/oauth');
+const fetch = require('node-fetch').default;
 
 const router = express.Router();
 
@@ -100,6 +102,25 @@ router.get('/by-cluster/:clusterId', async (req, res) => {
     }
   } catch (err) {
     console.error('Error fetching photos by cluster:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get original photo from OneDrive (proxy)
+router.get('/:photoId/view', async (req, res) => {
+  try {
+    const token = await getValidAccessToken();
+    const itemRes = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/items/${req.params.photoId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!itemRes.ok) return res.status(404).json({ error: 'Photo not found' });
+    const item = await itemRes.json();
+    const downloadUrl = item['@microsoft.graph.downloadUrl'];
+    if (!downloadUrl) return res.status(404).json({ error: 'No download URL' });
+    res.redirect(downloadUrl);
+  } catch (err) {
+    console.error('Error fetching photo:', err);
     res.status(500).json({ error: err.message });
   }
 });

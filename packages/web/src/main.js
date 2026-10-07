@@ -513,7 +513,7 @@ async function loadPhotos(clusterId = null) {
     }
 
     photosGrid.innerHTML = data.photos.map(photo => `
-      <div class="photo-item" title="${photo.name}">
+      <div class="photo-item" title="${photo.name}" onclick="viewPhoto('${photo.id}', '${photo.name.replace(/'/g, "\\'")}')" style="cursor:pointer;">
         ${photo.face_thumbnail
           ? `<div style="position:relative;width:100%;height:80px;overflow:hidden;border-radius:6px;margin-bottom:4px;">
                <img src="data:image/jpeg;base64,${photo.face_thumbnail}" style="width:100%;height:100%;object-fit:cover;">
@@ -597,6 +597,30 @@ async function loadStats() {
     console.error('Error loading stats:', err);
   }
 }
+
+function viewPhoto(photoId, name) {
+  const lightbox = document.getElementById('photo-lightbox');
+  const img = document.getElementById('lightbox-img');
+  const loading = document.getElementById('lightbox-loading');
+  const nameEl = document.getElementById('lightbox-name');
+
+  img.style.display = 'none';
+  loading.style.display = 'block';
+  nameEl.textContent = name;
+  lightbox.classList.remove('hidden');
+
+  img.onload = () => { loading.style.display = 'none'; img.style.display = 'block'; };
+  img.onerror = () => { loading.textContent = 'Failed to load image'; };
+  img.src = `${API_BASE}/photos/${photoId}/view`;
+}
+window.viewPhoto = viewPhoto;
+
+function closeLightbox() {
+  const lightbox = document.getElementById('photo-lightbox');
+  lightbox.classList.add('hidden');
+  document.getElementById('lightbox-img').src = '';
+}
+window.closeLightbox = closeLightbox;
 
 // Initial load
 checkAuthStatus();
