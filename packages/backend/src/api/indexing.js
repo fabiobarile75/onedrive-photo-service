@@ -16,9 +16,11 @@ router.post('/faces/start', async (req, res) => {
   console.log('POST /faces/start - received request, body:', req.body);
   const distance = parseFloat(req.body?.distance) || 0.6;
   const model = ['hog', 'cnn', 'mediapipe', 'mtcnn'].includes(req.body?.model) ? req.body.model : 'hog';
-  console.log('Using distance:', distance, 'model:', model);
+  const limit = Math.min(parseInt(req.body?.limit) || 100, 10000);
+  const concurrency = Math.min(Math.max(parseInt(req.body?.concurrency) || 5, 1), 20);
+  console.log('Using distance:', distance, 'model:', model, 'limit:', limit, 'concurrency:', concurrency);
   res.json({ status: 'started' });
-  startFaceDetection(distance, model).catch(err => console.error('Face detection error:', err));
+  startFaceDetection(distance, model, limit, concurrency).catch(err => console.error('Face detection error:', err));
 });
 
 // Get indexing state

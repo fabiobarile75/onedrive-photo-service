@@ -188,10 +188,12 @@ async function startFaceDetectionJob() {
 
     const distance = parseFloat(distanceSlider.value);
     const detectionModel = document.getElementById('detection-model-select').value;
+    const limit = parseInt(document.getElementById('face-limit-input').value) || 100;
+    const concurrency = parseInt(document.getElementById('face-concurrency-input').value) || 5;
     const res = await fetch(`${API_BASE}/indexing/faces/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ distance, model: detectionModel })
+      body: JSON.stringify({ distance, model: detectionModel, limit, concurrency })
     });
     const data = await res.json();
 

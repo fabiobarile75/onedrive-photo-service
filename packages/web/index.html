@@ -97,6 +97,19 @@
             </select>
           </div>
 
+          <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+              <label style="display:block;margin-bottom:6px;font-weight:500;">Max photos</label>
+              <input type="number" id="face-limit-input" value="100" min="1" max="10000" step="10"
+                style="width:100%;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#fff;">
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:6px;font-weight:500;">Parallelism</label>
+              <input type="number" id="face-concurrency-input" value="5" min="1" max="20"
+                style="width:100%;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#fff;">
+            </div>
+          </div>
+
           <div style="margin-top:16px;">
             <label style="display:block;margin-bottom:8px;font-weight:500;">
               Clustering distance: <span id="distance-value">0.6</span>

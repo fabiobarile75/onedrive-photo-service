@@ -196,7 +196,7 @@ async function startIndexing() {
   }
 }
 
-async function startFaceDetection(distance = 0.6, model = 'hog') {
+async function startFaceDetection(distance = 0.6, model = 'hog', limit = 100, concurrency = 5) {
   const pool = getPool();
   let client = await pool.connect();
 
@@ -212,18 +212,17 @@ async function startFaceDetection(distance = 0.6, model = 'hog') {
 
     const token = await getValidAccessToken();
 
-    const result = await pool.query(`SELECT id, name FROM photos LIMIT 100`);
+    const result = await pool.query(`SELECT id, name FROM photos LIMIT $1`, [limit]);
     const photoRows = result.rows;
-    console.log(`Face detection: processing ${photoRows.length} photos...`);
+    console.log(`Face detection: processing ${photoRows.length} photos (limit=${limit}, concurrency=${concurrency})...`);
 
     // Build photo objects with fresh download URLs
     const photos = photoRows.map(r => ({
       id: r.id,
       name: r.name,
-      // downloadUrl fetched on-demand in indexPhotoWithFaces via Graph API
     }));
 
-    const CONCURRENCY = 5;
+    const CONCURRENCY = concurrency;
     let processed = 0;
 
     async function processPhoto(photo) {

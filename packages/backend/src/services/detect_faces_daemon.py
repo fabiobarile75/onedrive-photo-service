@@ -29,7 +29,7 @@ def get_mtcnn():
     global _mtcnn
     if _mtcnn is None:
         from facenet_pytorch import MTCNN
-        _mtcnn = MTCNN(keep_all=True, min_face_size=40, thresholds=[0.7, 0.8, 0.9])
+        _mtcnn = MTCNN(keep_all=True, min_face_size=40, thresholds=[0.9, 0.9, 0.9])
     return _mtcnn
 
 def open_image(image_path):
