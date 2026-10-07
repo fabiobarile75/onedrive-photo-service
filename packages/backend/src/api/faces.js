@@ -86,17 +86,19 @@ router.get('/photo/:photoId', async (req, res) => {
     try {
       const result = await client.query(`
         SELECT
-          id,
-          face_index,
-          bounding_box,
-          age,
-          gender,
-          expressions,
-          person_cluster_id,
-          encode(thumbnail, 'base64') as thumbnail
-        FROM photo_faces
-        WHERE photo_id = $1
-        ORDER BY face_index
+          pf.id,
+          pf.face_index,
+          pf.bounding_box,
+          pf.age,
+          pf.gender,
+          pf.expressions,
+          pf.person_cluster_id,
+          pc.name as cluster_name,
+          encode(pf.thumbnail, 'base64') as thumbnail
+        FROM photo_faces pf
+        LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id
+        WHERE pf.photo_id = $1
+        ORDER BY pf.face_index
       `, [req.params.photoId]);
 
       res.json(result.rows);

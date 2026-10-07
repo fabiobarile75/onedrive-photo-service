@@ -600,18 +600,65 @@ async function loadStats() {
 
 function viewPhoto(photoId, name) {
   const lightbox = document.getElementById('photo-lightbox');
-  const img = document.getElementById('lightbox-img');
   const loading = document.getElementById('lightbox-loading');
   const nameEl = document.getElementById('lightbox-name');
 
-  img.style.display = 'none';
+  // Replace img with canvas for face box overlay
+  let canvas = document.getElementById('lightbox-canvas');
+  if (!canvas) {
+    const img = document.getElementById('lightbox-img');
+    canvas = document.createElement('canvas');
+    canvas.id = 'lightbox-canvas';
+    canvas.style.cssText = 'max-width:95vw;max-height:88vh;border-radius:6px;display:none;';
+    img.parentNode.replaceChild(canvas, img);
+  }
+  canvas.style.display = 'none';
   loading.style.display = 'block';
+  loading.textContent = 'Loading...';
   nameEl.textContent = name;
   lightbox.classList.remove('hidden');
 
-  img.onload = () => { loading.style.display = 'none'; img.style.display = 'block'; };
-  img.onerror = () => { loading.textContent = 'Failed to load image'; };
-  img.src = `${API_BASE}/photos/${photoId}/view`;
+  // Load image and faces in parallel
+  const imgLoader = new Image();
+  const facesPromise = fetch(`${API_BASE}/faces/photo/${photoId}`).then(r => r.json()).catch(() => []);
+
+  imgLoader.onload = async () => {
+    const faces = await facesPromise;
+    const maxW = Math.min(window.innerWidth * 0.92, 1200);
+    const scale = imgLoader.width > maxW ? maxW / imgLoader.width : 1;
+    canvas.width = imgLoader.width * scale;
+    canvas.height = imgLoader.height * scale;
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imgLoader, 0, 0, canvas.width, canvas.height);
+
+    const colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c'];
+    faces.forEach((face, i) => {
+      if (!face.bounding_box) return;
+      const box = typeof face.bounding_box === 'string' ? JSON.parse(face.bounding_box) : face.bounding_box;
+      const color = colors[i % colors.length];
+      const x = box.x * scale, y = box.y * scale;
+      const w = box.width * scale, h = box.height * scale;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+
+      const label = face.cluster_name || (face.person_cluster_id ? face.person_cluster_id.substring(0, 6) : 'Unknown');
+      ctx.font = 'bold 14px sans-serif';
+      const textW = ctx.measureText(label).width + 8;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y > 20 ? y - 20 : y + h, textW, 20);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x + 4, y > 20 ? y - 5 : y + h + 15);
+    });
+
+    loading.style.display = 'none';
+    canvas.style.display = 'block';
+  };
+
+  imgLoader.onerror = () => { loading.textContent = 'Failed to load image'; };
+  imgLoader.src = `${API_BASE}/photos/${photoId}/view`;
 }
 window.viewPhoto = viewPhoto;
 
