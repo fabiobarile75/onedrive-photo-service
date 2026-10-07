@@ -75,4 +75,33 @@ router.get('/location', async (req, res) => {
   }
 });
 
+// Get photos filtered by cluster
+router.get('/by-cluster/:clusterId', async (req, res) => {
+  try {
+    const { clusterId } = req.params;
+    const limit = parseInt(req.query.limit) || 100;
+    const pool = getPool();
+    const client = await pool.connect();
+
+    try {
+      const result = await client.query(
+        `SELECT DISTINCT p.id, p.name, p.taken_at,
+                encode(pf.thumbnail, 'base64') as face_thumbnail
+         FROM photos p
+         JOIN photo_faces pf ON pf.photo_id = p.id
+         WHERE pf.person_cluster_id = $1
+         ORDER BY p.taken_at DESC NULLS LAST
+         LIMIT $2`,
+        [clusterId, limit]
+      );
+      res.json({ photos: result.rows });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('Error fetching photos by cluster:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

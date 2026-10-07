@@ -496,18 +496,29 @@ function closeClustersModal() {
 }
 window.closeClustersModal = closeClustersModal;
 
-async function loadPhotos() {
+async function loadPhotos(clusterId = null) {
   try {
-    const res = await fetch(`${API_BASE}/photos?limit=50`);
-    const data = await res.json();
+    let url, data;
+    if (clusterId) {
+      const res = await fetch(`${API_BASE}/photos/by-cluster/${clusterId}?limit=200`);
+      data = await res.json();
+    } else {
+      const res = await fetch(`${API_BASE}/photos?limit=50`);
+      data = await res.json();
+    }
 
-    if (data.photos.length === 0) {
-      photosGrid.innerHTML = '<p class="empty">No photos indexed yet</p>';
+    if (!data.photos || data.photos.length === 0) {
+      photosGrid.innerHTML = '<p class="empty">No photos found</p>';
       return;
     }
 
     photosGrid.innerHTML = data.photos.map(photo => `
       <div class="photo-item" title="${photo.name}">
+        ${photo.face_thumbnail
+          ? `<div style="position:relative;width:100%;height:80px;overflow:hidden;border-radius:6px;margin-bottom:4px;">
+               <img src="data:image/jpeg;base64,${photo.face_thumbnail}" style="width:100%;height:100%;object-fit:cover;">
+             </div>`
+          : ''}
         <div class="photo-info">
           <strong>${photo.name.substring(0, 20)}...</strong>
           ${photo.taken_at ? `<div>${new Date(photo.taken_at).toLocaleDateString()}</div>` : ''}
@@ -518,6 +529,59 @@ async function loadPhotos() {
     console.error('Error loading photos:', err);
   }
 }
+
+let galleryFilterClusterId = null;
+
+function clearGalleryFilter() {
+  galleryFilterClusterId = null;
+  document.getElementById('gallery-filter-label').style.display = 'none';
+  document.getElementById('gallery-search').value = '';
+  loadPhotos();
+}
+window.clearGalleryFilter = clearGalleryFilter;
+
+// Gallery search autocomplete
+const gallerySearch = document.getElementById('gallery-search');
+const gallerySuggestions = document.getElementById('gallery-search-suggestions');
+
+gallerySearch.addEventListener('input', async () => {
+  const q = gallerySearch.value.trim().toLowerCase();
+  if (!q) { gallerySuggestions.style.display = 'none'; return; }
+
+  const res = await fetch(`${API_BASE}/faces/clusters`);
+  const clusters = await res.json();
+  const matches = clusters.filter(c => {
+    const name = (c.cluster_name || 'Person ' + c.person_cluster_id.substring(0, 6)).toLowerCase();
+    return name.includes(q);
+  });
+
+  if (matches.length === 0) { gallerySuggestions.style.display = 'none'; return; }
+
+  gallerySuggestions.style.display = 'block';
+  gallerySuggestions.innerHTML = matches.map(c => {
+    const name = c.cluster_name || 'Person ' + c.person_cluster_id.substring(0, 6);
+    return `<div onclick="selectGalleryCluster('${c.person_cluster_id}','${name.replace(/'/g, "\\'")}')"
+      style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #333;display:flex;align-items:center;gap:8px;">
+      ${c.thumbnail ? `<img src="data:image/jpeg;base64,${c.thumbnail}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">` : ''}
+      <span>${name}</span>
+      <span style="color:#888;font-size:0.85em;margin-left:auto;">${c.face_count} faces</span>
+    </div>`;
+  }).join('');
+});
+
+gallerySearch.addEventListener('blur', () => {
+  setTimeout(() => { gallerySuggestions.style.display = 'none'; }, 200);
+});
+
+function selectGalleryCluster(clusterId, name) {
+  galleryFilterClusterId = clusterId;
+  gallerySearch.value = name;
+  gallerySuggestions.style.display = 'none';
+  document.getElementById('gallery-filter-label').style.display = 'block';
+  document.getElementById('gallery-filter-name').textContent = name;
+  loadPhotos(clusterId);
+}
+window.selectGalleryCluster = selectGalleryCluster;
 
 async function loadStats() {
   try {
