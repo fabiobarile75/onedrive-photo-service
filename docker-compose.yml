@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: onedrive_photos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: packages/backend/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: postgres
+      DB_NAME: onedrive_photos
+      NODE_ENV: production
+      FACE_DETECTION_WORKERS: 2
+      FACE_DETECTION_TIMEOUT: 30000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./tokens.json:/app/tokens.json:ro
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

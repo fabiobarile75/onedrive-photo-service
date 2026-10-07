@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OneDrive Photo Service</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app" class="container">
+    <header>
+      <h1>OneDrive Photo Indexer</h1>
+      <p class="subtitle">Index and manage your OneDrive photos with face recognition</p>
+      <div class="header-controls">
+        <button id="auth-status-btn" class="btn btn-sm btn-secondary" title="Check authentication status">
+          🔐 Auth Status
+        </button>
+        <button id="refresh-token-btn" class="btn btn-sm btn-secondary" title="Refresh OAuth token">
+          🔄 Refresh Token
+        </button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="indexing">Indexing</button>
+      <button class="tab-btn" data-tab="face-detection">Face Detection</button>
+      <button class="tab-btn" data-tab="clusters">Face Clusters</button>
+      <button class="tab-btn" data-tab="gallery">Gallery</button>
+      <button class="tab-btn" data-tab="stats">Stats</button>
+    </nav>
+
+    <main>
+      <!-- Indexing Tab -->
+      <section id="indexing" class="tab-content active">
+        <div class="card">
+          <h2>Photo Indexing</h2>
+
+          <div id="indexing-status" class="status idle">
+            <span class="status-label">Status: </span>
+            <span id="status-text">Idle</span>
+          </div>
+
+          <div id="progress-section" class="progress-section hidden">
+            <div class="progress-bar">
+              <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div class="progress-info">
+              <span id="progress-text">0 / 0 items</span>
+              <span id="progress-pages" class="secondary">Processed: 0</span>
+            </div>
+            <p id="progress-status" class="status-message">Starting...</p>
+          </div>
+
+          <div id="error-section" class="error-section hidden">
+            <p class="error-text" id="error-text"></p>
+          </div>
+
+          <div class="btn-group" style="display:flex;gap:12px;margin-top:16px;">
+            <button id="start-btn" class="btn btn-primary">📷 Index Photos</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Face Detection Tab -->
+      <section id="face-detection" class="tab-content">
+        <div class="card">
+          <h2>Face Detection</h2>
+
+          <div id="face-indexing-status" class="status idle">
+            <span class="status-label">Status: </span>
+            <span id="face-status-text">Idle</span>
+          </div>
+
+          <div id="face-progress-section" class="progress-section hidden">
+            <div class="progress-bar">
+              <div id="face-progress-fill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div class="progress-info">
+              <span id="face-progress-text">0 / 0 items</span>
+            </div>
+            <p id="face-progress-status" class="status-message">Detecting faces...</p>
+          </div>
+
+          <div id="face-error-section" class="error-section hidden">
+            <p class="error-text" id="face-error-text"></p>
+          </div>
+
+          <div style="margin-top:16px;">
+            <label style="display:block;margin-bottom:8px;font-weight:500;">
+              Clustering distance: <span id="distance-value">0.6</span>
+            </label>
+            <input type="range" id="distance-slider" min="0.3" max="0.9" step="0.05" value="0.6"
+              style="width:100%;margin-bottom:4px;">
+            <div style="display:flex;justify-content:space-between;font-size:0.8em;color:#999;">
+              <span>Strict (0.3)</span>
+              <span>Loose (0.9)</span>
+            </div>
+          </div>
+
+          <button id="face-detect-btn" class="btn btn-primary" style="margin-top:16px;">🔍 Detect Faces</button>
+        </div>
+      </section>
+
+      <!-- Clusters Tab -->
+      <section id="clusters" class="tab-content">
+        <div class="card" style="margin-bottom:16px;">
+          <h2>Test an Image</h2>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <input type="file" id="test-image-input" accept="image/*" style="flex:1;min-width:200px;">
+            <select id="test-model-select" class="btn btn-secondary" style="padding:8px 12px;">
+              <option value="hog">HOG (fast)</option>
+              <option value="mtcnn">MTCNN (fast+accurate)</option>
+              <option value="mediapipe">MediaPipe (fast)</option>
+              <option value="cnn">CNN (accurate)</option>
+            </select>
+            <button class="btn btn-primary" id="test-image-btn">🔍 Identify Faces</button>
+          </div>
+          <div id="test-image-result" style="margin-top:16px;display:none;">
+            <canvas id="test-image-canvas" style="max-width:100%;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Face Clusters</h2>
+          <div id="clusters-container" class="clusters-grid">
+            <p class="empty">No clusters yet. Start indexing first.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Gallery Tab -->
+      <section id="gallery" class="tab-content">
+        <div class="card">
+          <h2>Photo Gallery</h2>
+          <div id="photos-grid" class="photos-grid">
+            <p class="empty">No photos indexed yet</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Stats Tab -->
+      <section id="stats" class="tab-content">
+        <div class="card">
+          <h2>Statistics</h2>
+          <div id="stats-grid" class="stats-grid">
+            <div class="stat-item">
+              <div class="stat-value" id="stat-photos">0</div>
+              <div class="stat-label">Total Photos</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="stat-faces">0</div>
+              <div class="stat-label">Total Faces</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="stat-clusters">0</div>
+              <div class="stat-label">Person Clusters</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="stat-unclassified">0</div>
+              <div class="stat-label">Unclassified Faces</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="stat-avg-age">-</div>
+              <div class="stat-label">Average Age</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Cluster Detail Modal -->
+  <div id="cluster-modal" class="modal hidden">
+    <div class="modal-content">
+      <span class="modal-close">&times;</span>
+      <h2>Cluster Details</h2>
+      <div id="cluster-detail" class="cluster-detail">
+        <div class="faces-grid" id="cluster-faces"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeClustersModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
+

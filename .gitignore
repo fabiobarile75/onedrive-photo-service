@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+tokens.json
+*.log
+.env
+.env.local
+dist/
+.vite/
+__pycache__/
+*.pyc
+*.tflite

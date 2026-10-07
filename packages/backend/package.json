@@ -1,0 +1,25 @@
+{
+  "name": "onedrive-photo-backend",
+  "version": "1.0.0",
+  "description": "OneDrive photo indexer backend",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "db:init": "node src/db/init.js",
+    "login": "node scripts/login.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "node-fetch": "^3.3.2",
+    "open": "^11.0.4",
+    "pg": "^8.11.3",
+    "sharp": "^0.33.0"
+  },
+  "optionalDependencies": {
+    "@vladmandic/face-api": "^1.7.13",
+    "canvas": "^2.11.2"
+  }
+}
