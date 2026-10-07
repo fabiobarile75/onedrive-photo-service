@@ -408,8 +408,12 @@ async function openClusterDetail(clusterId) {
           ${face.age ? `${face.age}y` : ''}
           ${face.gender ? ` ${emotionEmoji(face.gender)}` : ''}
         </div>
-        <button onclick="removeFaceFromCluster('${clusterId}', ${face.id})" title="Remove from cluster"
-          style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.6);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:20px;padding:0;">✕</button>
+        <div style="position:absolute;top:2px;right:2px;display:flex;gap:2px;">
+          <button onclick="moveFaceToCluster('${clusterId}', ${face.id})" title="Move to another cluster"
+            style="background:rgba(52,152,219,0.85);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:20px;padding:0;">↗</button>
+          <button onclick="removeFaceFromCluster('${clusterId}', ${face.id})" title="Remove from cluster"
+            style="background:rgba(0,0,0,0.6);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:20px;padding:0;">✕</button>
+        </div>
       </div>
     `).join('');
 
@@ -445,6 +449,29 @@ async function removeFaceFromCluster(clusterId, faceId) {
   loadClusters();
 }
 window.removeFaceFromCluster = removeFaceFromCluster;
+
+async function moveFaceToCluster(fromClusterId, faceId) {
+  const res = await fetch(`${API_BASE}/faces/clusters`);
+  const clusters = await res.json();
+  const others = clusters.filter(c => c.person_cluster_id !== fromClusterId);
+  if (others.length === 0) { alert('No other clusters to move to.'); return; }
+
+  const options = others.map((c, i) => `${i + 1}. ${c.cluster_name || c.person_cluster_id.substring(0, 6)} (${c.face_count} faces)`).join('\n');
+  const input = prompt(`Move face to which cluster?\n${options}`);
+  if (!input) return;
+  const idx = parseInt(input) - 1;
+  if (idx < 0 || idx >= others.length) { alert('Invalid selection'); return; }
+
+  const targetId = others[idx].person_cluster_id;
+  await fetch(`${API_BASE}/faces/${faceId}/cluster`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clusterId: targetId })
+  });
+  openClusterDetail(fromClusterId);
+  loadClusters();
+}
+window.moveFaceToCluster = moveFaceToCluster;
 
 async function showMergeDialog(clusterId) {
   const res = await fetch(`${API_BASE}/faces/clusters`);
