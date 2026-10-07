@@ -15,9 +15,10 @@ router.post('/start', async (req, res) => {
 router.post('/faces/start', async (req, res) => {
   console.log('POST /faces/start - received request, body:', req.body);
   const distance = parseFloat(req.body?.distance) || 0.6;
-  console.log('Using distance:', distance);
+  const model = ['hog', 'cnn', 'mediapipe', 'mtcnn'].includes(req.body?.model) ? req.body.model : 'hog';
+  console.log('Using distance:', distance, 'model:', model);
   res.json({ status: 'started' });
-  startFaceDetection(distance).catch(err => console.error('Face detection error:', err));
+  startFaceDetection(distance, model).catch(err => console.error('Face detection error:', err));
 });
 
 // Get indexing state

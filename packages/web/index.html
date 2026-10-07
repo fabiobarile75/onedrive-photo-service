@@ -87,6 +87,18 @@
 
           <div style="margin-top:16px;">
             <label style="display:block;margin-bottom:8px;font-weight:500;">
+              Detection model:
+            </label>
+            <select id="detection-model-select" class="btn btn-secondary" style="padding:8px 12px;width:100%;">
+              <option value="hog">HOG (fast)</option>
+              <option value="mtcnn" selected>MTCNN (fast + accurate)</option>
+              <option value="mediapipe">MediaPipe (fast)</option>
+              <option value="cnn">CNN (accurate)</option>
+            </select>
+          </div>
+
+          <div style="margin-top:16px;">
+            <label style="display:block;margin-bottom:8px;font-weight:500;">
               Clustering distance: <span id="distance-value">0.6</span>
             </label>
             <input type="range" id="distance-slider" min="0.3" max="0.9" step="0.05" value="0.6"

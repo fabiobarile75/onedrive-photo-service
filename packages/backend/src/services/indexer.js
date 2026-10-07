@@ -87,7 +87,7 @@ async function savePhotosToDb(photos) {
   }
 }
 
-async function indexPhotoWithFaces(photo, token) {
+async function indexPhotoWithFaces(photo, token, model = 'hog') {
   try {
     const downloadUrl = photo['@microsoft.graph.downloadUrl'];
     if (!downloadUrl) {
@@ -101,7 +101,7 @@ async function indexPhotoWithFaces(photo, token) {
     const processedBuffer = await convertPhotoBuffer(imageBuffer, photo.name);
 
     // 2. Détecter faces
-    const detections = await detectFacesInImage(processedBuffer);
+    const detections = await detectFacesInImage(processedBuffer, '.jpg', model);
 
     if (detections.length === 0) {
       console.log(`  No faces detected in ${photo.name}`);
@@ -196,7 +196,7 @@ async function startIndexing() {
   }
 }
 
-async function startFaceDetection(distance = 0.6) {
+async function startFaceDetection(distance = 0.6, model = 'hog') {
   const pool = getPool();
   let client = await pool.connect();
 
@@ -233,7 +233,7 @@ async function startFaceDetection(distance = 0.6) {
       );
       const itemData = await itemRes.json();
       photo['@microsoft.graph.downloadUrl'] = itemData['@microsoft.graph.downloadUrl'];
-      await indexPhotoWithFaces(photo, token);
+      await indexPhotoWithFaces(photo, token, model);
       processed++;
       if (processed % 10 === 0) {
         await pool.query(

@@ -187,10 +187,11 @@ async function startFaceDetectionJob() {
     document.getElementById('face-error-section').classList.add('hidden');
 
     const distance = parseFloat(distanceSlider.value);
+    const detectionModel = document.getElementById('detection-model-select').value;
     const res = await fetch(`${API_BASE}/indexing/faces/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ distance })
+      body: JSON.stringify({ distance, model: detectionModel })
     });
     const data = await res.json();
 
