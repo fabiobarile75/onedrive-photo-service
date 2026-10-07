@@ -3,54 +3,107 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const readline = require('readline');
 
-const PYTHON_SCRIPT = path.join(__dirname, 'detect_faces.py');
+const PYTHON_DAEMON = path.join(__dirname, 'detect_faces_daemon.py');
+
+let daemonProc = null;
+let daemonReady = false;
+let pendingRequests = new Map(); // reqId -> { resolve, reject, buffer }
+let reqIdCounter = 0;
+let rl = null;
+
+function startDaemon() {
+  daemonProc = spawn('python3', [PYTHON_DAEMON]);
+  daemonReady = false;
+
+  rl = readline.createInterface({ input: daemonProc.stdout });
+
+  rl.on('line', (line) => {
+    line = line.trim();
+    if (!line) return;
+    try {
+      const msg = JSON.parse(line);
+      if (msg.status === 'ready') {
+        daemonReady = true;
+        // Flush any queued requests
+        for (const [id, req] of pendingRequests) {
+          if (!req.sent) sendRequest(id, req);
+        }
+        return;
+      }
+      // Find the oldest pending request and resolve it
+      const firstKey = pendingRequests.keys().next().value;
+      if (firstKey !== undefined) {
+        const req = pendingRequests.get(firstKey);
+        pendingRequests.delete(firstKey);
+        try { fs.unlinkSync(req.tmpFile); } catch {}
+        if (msg.error) {
+          console.error('Python face detection error:', msg.error);
+          req.resolve([]);
+        } else {
+          req.resolve(msg.faces || []);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse daemon output:', line.substring(0, 100));
+    }
+  });
+
+  daemonProc.on('error', (err) => {
+    console.error('Daemon error:', err.message);
+    daemonProc = null;
+    daemonReady = false;
+  });
+
+  daemonProc.on('close', (code) => {
+    console.log('Daemon exited with code', code, '— restarting...');
+    daemonProc = null;
+    daemonReady = false;
+    // Reject all pending
+    for (const [id, req] of pendingRequests) {
+      try { fs.unlinkSync(req.tmpFile); } catch {}
+      req.resolve([]);
+    }
+    pendingRequests.clear();
+    setTimeout(startDaemon, 1000);
+  });
+}
+
+function sendRequest(id, req) {
+  req.sent = true;
+  const msg = JSON.stringify({ image_path: req.tmpFile, model: req.model }) + '\n';
+  daemonProc.stdin.write(msg);
+}
+
+function ensureDaemon() {
+  if (!daemonProc) startDaemon();
+}
 
 async function detectFacesInImage(imageBuffer, ext = '.jpg', model = 'hog') {
+  ensureDaemon();
   const tmpFile = path.join(os.tmpdir(), `face_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
+  fs.writeFileSync(tmpFile, imageBuffer);
 
-  try {
-    fs.writeFileSync(tmpFile, imageBuffer);
-
-    return await new Promise((resolve, reject) => {
-      const proc = spawn('python3', [PYTHON_SCRIPT, tmpFile, model]);
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', d => stdout += d);
-      proc.stderr.on('data', d => stderr += d);
-
-      proc.on('close', code => {
-        try {
-          // Extract the JSON line (ignore any warnings/noise before it)
-          const jsonLine = stdout.split('\n').find(line => line.trim().startsWith('{'));
-          if (!jsonLine) {
-            console.error('No JSON found in Python output:', stdout.substring(0, 200));
-            resolve([]);
-            return;
-          }
-          const result = JSON.parse(jsonLine);
-          if (result.error) {
-            console.error('Python face detection error:', result.error);
-            resolve([]);
-          } else {
-            resolve(result.faces || []);
-          }
-        } catch (e) {
-          console.error('Failed to parse Python output:', stdout.substring(0, 200));
-          resolve([]);
-        }
-      });
-
-      proc.on('error', err => {
-        console.error('Failed to spawn python3:', err.message);
+  return new Promise((resolve) => {
+    const id = reqIdCounter++;
+    const req = { resolve, tmpFile, model, sent: false };
+    pendingRequests.set(id, req);
+    if (daemonReady) sendRequest(id, req);
+    // Timeout after 120s
+    setTimeout(() => {
+      if (pendingRequests.has(id)) {
+        pendingRequests.delete(id);
+        try { fs.unlinkSync(tmpFile); } catch {}
+        console.error('Face detection timeout');
         resolve([]);
-      });
-    });
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch {}
-  }
+      }
+    }, 120000);
+  });
 }
+
+// Start daemon eagerly at module load
+startDaemon();
 
 async function extractFaceThumbnail(imageBuffer, box, size = 256) {
   const sharp = require('sharp');
