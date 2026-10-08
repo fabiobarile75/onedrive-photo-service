@@ -188,7 +188,7 @@ function faceDistance(desc1, desc2) {
   return Math.sqrt(sum);
 }
 
-async function clusterFacesByPerson(threshold = 0.5) {
+async function clusterFacesByPerson(threshold = 1.0) {
   const pool = getPool();
   const client = await pool.connect();
 

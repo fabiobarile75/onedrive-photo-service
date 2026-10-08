@@ -438,7 +438,7 @@ print('ok')
          WHERE pf.descriptor IS NOT NULL AND pf.person_cluster_id IS NOT NULL`
       );
 
-      const threshold = 0.6;
+      const threshold = parseFloat(req.body?.threshold) || 1.0;
       const results = detectedFaces.map(face => {
         const detDesc = Buffer.from(new Float32Array(face.descriptor).buffer);
         let minDist = Infinity;

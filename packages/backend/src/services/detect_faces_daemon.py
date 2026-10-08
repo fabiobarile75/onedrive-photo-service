@@ -9,10 +9,9 @@ os.environ['GLOG_minloglevel'] = '3'
 import warnings
 warnings.filterwarnings('ignore')
 
-# Pre-load heavy libraries at startup
-import face_recognition
 from PIL import Image, ImageOps
 import numpy as np
+import torch
 
 try:
     from pillow_heif import register_heif_opener, open_heif
@@ -23,14 +22,21 @@ except ImportError:
 
 MEDIAPIPE_MODEL = os.path.join(os.path.dirname(__file__), 'blaze_face_full_range.tflite')
 _mtcnn = None
-_mediapipe_detector = None
+_resnet = None
 
 def get_mtcnn():
     global _mtcnn
     if _mtcnn is None:
         from facenet_pytorch import MTCNN
-        _mtcnn = MTCNN(keep_all=True, min_face_size=40, thresholds=[0.9, 0.9, 0.9])
+        _mtcnn = MTCNN(keep_all=True, min_face_size=40, thresholds=[0.9, 0.9, 0.9], post_process=True)
     return _mtcnn
+
+def get_resnet():
+    global _resnet
+    if _resnet is None:
+        from facenet_pytorch import InceptionResnetV1
+        _resnet = InceptionResnetV1(pretrained='vggface2').eval()
+    return _resnet
 
 def open_image(image_path):
     ext = os.path.splitext(image_path)[1].lower()
@@ -46,9 +52,9 @@ def resize(pil_img, max_size):
     r = max_size / max(w, h)
     return pil_img.resize((int(w * r), int(h * r)), Image.LANCZOS)
 
-def make_faces(locs, encodings, img_w, img_h):
+def make_faces(locs, embeddings, img_w, img_h):
     faces = []
-    for i, (location, encoding) in enumerate(zip(locs, encodings)):
+    for i, (location, embedding) in enumerate(zip(locs, embeddings)):
         top, right, bottom, left = location
         faces.append({
             "index": i,
@@ -58,7 +64,7 @@ def make_faces(locs, encodings, img_w, img_h):
                 "width": (right - left) / img_w,
                 "height": (bottom - top) / img_h
             },
-            "descriptor": encoding.tolist(),
+            "descriptor": embedding.tolist(),
             "age": None,
             "emotion": None,
             "emotions": {}
@@ -72,16 +78,28 @@ def detect(image_path, model):
         pil_img = resize(pil_img, 1200)
         w, h = pil_img.size
         mtcnn = get_mtcnn()
+        resnet = get_resnet()
+
         boxes, probs = mtcnn.detect(pil_img)
         if boxes is None:
             return []
-        arr = np.array(pil_img)
+
+        face_tensors = mtcnn(pil_img)
+        if face_tensors is None:
+            return []
+
+        if face_tensors.dim() == 3:
+            face_tensors = face_tensors.unsqueeze(0)
+
+        with torch.no_grad():
+            embeddings = resnet(face_tensors).numpy()
+
         locs = []
         for b in boxes:
             x1, y1, x2, y2 = b
             locs.append((max(0, int(y1)), min(w, int(x2)), min(h, int(y2)), max(0, int(x1))))
-        encodings = face_recognition.face_encodings(arr, locs)
-        return make_faces(locs, encodings, w, h)
+
+        return make_faces(locs, embeddings, w, h)
 
     elif model == "mediapipe":
         import mediapipe as mp, urllib.request
@@ -110,10 +128,12 @@ def detect(image_path, model):
                 bbox = d.bounding_box
                 locs.append((max(0, bbox.origin_y), min(w, bbox.origin_x + bbox.width),
                               min(h, bbox.origin_y + bbox.height), max(0, bbox.origin_x)))
+            import face_recognition
             encodings = face_recognition.face_encodings(arr, locs)
             return make_faces(locs, encodings, w, h)
 
     else:
+        import face_recognition
         max_size = 1200 if model == "cnn" else 2000
         pil_img = resize(pil_img, max_size)
         w, h = pil_img.size
@@ -121,6 +141,10 @@ def detect(image_path, model):
         locations = face_recognition.face_locations(image, model=model)
         encodings = face_recognition.face_encodings(image, locations)
         return make_faces(locations, encodings, w, h)
+
+# Pre-load MTCNN and InceptionResnet at startup
+get_mtcnn()
+get_resnet()
 
 # Signal ready
 sys.stderr = open(os.devnull, 'w')

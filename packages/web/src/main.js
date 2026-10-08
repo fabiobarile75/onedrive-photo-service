@@ -31,6 +31,12 @@ distanceSlider.addEventListener('input', () => {
   distanceValue.textContent = distanceSlider.value;
 });
 
+const identifyThresholdSlider = document.getElementById('identify-threshold-slider');
+const identifyThresholdValue = document.getElementById('identify-threshold-value');
+identifyThresholdSlider.addEventListener('input', () => {
+  identifyThresholdValue.textContent = identifyThresholdSlider.value;
+});
+
 testImageBtn.addEventListener('click', testImageIdentify);
 
 async function testImageIdentify() {
@@ -42,9 +48,11 @@ async function testImageIdentify() {
 
   try {
     const model = document.getElementById('test-model-select').value;
+    const threshold = parseFloat(identifyThresholdSlider.value);
     const formData = new FormData();
     formData.append('image', file);
     formData.append('model', model);
+    formData.append('threshold', threshold);
 
     const res = await fetch(`${API_BASE}/faces/identify`, { method: 'POST', body: formData });
     const data = await res.json();
@@ -242,13 +250,23 @@ async function pollFaceDetectionState() {
       clearInterval(facePollingInterval);
       faceDetectBtn.disabled = false;
     } else if (state.status === 'clustering') {
+      document.getElementById('face-indexing-status').className = 'status indexing';
+      document.getElementById('face-status-text').textContent = 'Clustering faces...';
+      document.getElementById('face-progress-section').classList.remove('hidden');
       document.getElementById('face-progress-status').textContent = 'Clustering faces...';
       document.getElementById('face-progress-fill').style.width = '100%';
+      faceDetectBtn.disabled = true;
+      if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 2000);
     } else if (state.status === 'indexing') {
       const pct = state.total_items > 0 ? Math.round((state.processed_items / state.total_items) * 100) : 0;
+      document.getElementById('face-indexing-status').className = 'status indexing';
+      document.getElementById('face-status-text').textContent = 'Detecting faces...';
+      document.getElementById('face-progress-section').classList.remove('hidden');
       document.getElementById('face-progress-fill').style.width = pct + '%';
       document.getElementById('face-progress-text').textContent = `${state.processed_items} / ${state.total_items}`;
       document.getElementById('face-progress-status').textContent = 'Detecting faces...';
+      faceDetectBtn.disabled = true;
+      if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 2000);
     }
   } catch (err) {
     console.error('Face poll error:', err);
@@ -682,3 +700,4 @@ window.closeLightbox = closeLightbox;
 checkAuthStatus();
 loadStats();
 pollIndexingState();
+pollFaceDetectionState();

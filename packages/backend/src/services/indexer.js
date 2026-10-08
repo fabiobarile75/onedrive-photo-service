@@ -247,6 +247,13 @@ async function startFaceDetection(distance = 0.6, model = 'hog', limit = 100, co
       name: r.name,
     }));
 
+    // Store total upfront so the UI can show progress immediately
+    await pool.query(
+      `UPDATE indexing_state SET total_items = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = (SELECT MAX(id) FROM indexing_state)`,
+      [photos.length]
+    );
+
     const CONCURRENCY = concurrency;
     let processed = 0;
 
