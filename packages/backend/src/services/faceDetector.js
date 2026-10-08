@@ -26,7 +26,6 @@ function startDaemon() {
       const msg = JSON.parse(line);
       if (msg.status === 'ready') {
         daemonReady = true;
-        // Flush any queued requests
         for (const [id, req] of pendingRequests) {
           if (!req.sent) sendRequest(id, req);
         }
@@ -90,7 +89,6 @@ async function detectFacesInImage(imageBuffer, ext = '.jpg', model = 'hog') {
     const req = { resolve, tmpFile, model, sent: false };
     pendingRequests.set(id, req);
     if (daemonReady) sendRequest(id, req);
-    // Timeout after 120s
     setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
@@ -104,6 +102,17 @@ async function detectFacesInImage(imageBuffer, ext = '.jpg', model = 'hog') {
 
 // Start daemon eagerly at module load
 startDaemon();
+
+// Kill daemon on process exit
+function killDaemon() {
+  if (daemonProc) {
+    daemonProc.kill();
+    daemonProc = null;
+  }
+}
+process.on('exit', killDaemon);
+process.on('SIGINT', () => { killDaemon(); process.exit(0); });
+process.on('SIGTERM', () => { killDaemon(); process.exit(0); });
 
 async function extractFaceThumbnail(imageBuffer, box, size = 256) {
   const sharp = require('sharp');

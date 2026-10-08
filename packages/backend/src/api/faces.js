@@ -385,7 +385,6 @@ router.post('/identify', (req, res, next) => {
     const isHeic = ext === '.heic' || ext === '.heif' || req.file.mimetype === 'image/heic' || req.file.mimetype === 'image/heif';
 
     if (isHeic) {
-      // Convert HEIC to JPEG via Python/pillow-heif
       const tmpHeic = path.join(os.tmpdir(), `heic_${Date.now()}.heic`);
       const tmpJpeg = path.join(os.tmpdir(), `heic_${Date.now()}.jpg`);
       fs.writeFileSync(tmpHeic, req.file.buffer);
@@ -406,7 +405,11 @@ print('ok')
       try { fs.unlinkSync(tmpHeic); fs.unlinkSync(tmpJpeg); } catch {}
     } else {
       try {
-        imageBuffer = await sharp(req.file.buffer).jpeg().toBuffer();
+        imageBuffer = await sharp(req.file.buffer)
+          .rotate()
+          .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 90 })
+          .toBuffer();
       } catch (e) {
         imageBuffer = req.file.buffer;
       }
