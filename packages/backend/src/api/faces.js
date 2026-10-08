@@ -94,9 +94,11 @@ router.get('/photo/:photoId', async (req, res) => {
           pf.expressions,
           pf.person_cluster_id,
           pc.name as cluster_name,
-          encode(pf.thumbnail, 'base64') as thumbnail
+          encode(pf.thumbnail, 'base64') as thumbnail,
+          (p.metadata->'photo'->>'orientation')::int as exif_orientation
         FROM photo_faces pf
         LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id
+        JOIN photos p ON p.id = pf.photo_id
         WHERE pf.photo_id = $1
         ORDER BY pf.face_index
       `, [req.params.photoId]);

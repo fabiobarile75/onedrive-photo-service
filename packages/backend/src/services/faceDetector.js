@@ -109,11 +109,21 @@ async function extractFaceThumbnail(imageBuffer, box, size = 256) {
   const sharp = require('sharp');
 
   try {
+    const metadata = await sharp(imageBuffer).metadata();
+    const imgW = metadata.width;
+    const imgH = metadata.height;
+
     const padding = 0.15;
-    const x = Math.max(0, Math.floor(box.x - box.width * padding));
-    const y = Math.max(0, Math.floor(box.y - box.height * padding));
-    const width = Math.ceil(box.width * (1 + 2 * padding));
-    const height = Math.ceil(box.height * (1 + 2 * padding));
+    // box coords are percentages (0-1)
+    const bx = box.x * imgW;
+    const by = box.y * imgH;
+    const bw = box.width * imgW;
+    const bh = box.height * imgH;
+
+    const x = Math.max(0, Math.floor(bx - bw * padding));
+    const y = Math.max(0, Math.floor(by - bh * padding));
+    const width = Math.min(imgW - x, Math.ceil(bw * (1 + 2 * padding)));
+    const height = Math.min(imgH - y, Math.ceil(bh * (1 + 2 * padding)));
 
     const thumbnail = await sharp(imageBuffer)
       .extract({ left: x, top: y, width, height })

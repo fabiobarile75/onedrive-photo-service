@@ -98,10 +98,35 @@ async function indexPhotoWithFaces(photo, token, model = 'hog') {
     // 1. Télécharger et convertir image
     console.log(`Processing ${photo.name}...`);
     const imageBuffer = await downloadPhotoBuffer(photo.id, downloadUrl, token);
+    const ext = require('path').extname(photo.name).toLowerCase() || '.jpg';
     const processedBuffer = await convertPhotoBuffer(imageBuffer, photo.name);
 
-    // 2. Détecter faces
-    const detections = await detectFacesInImage(processedBuffer, '.jpg', model);
+    // For HEIC: convert to JPEG for thumbnail extraction (sharp can't handle HEIC)
+    let thumbnailBuffer = processedBuffer;
+    if (ext === '.heic' || ext === '.heif') {
+      try {
+        const os = require('os'), fs = require('fs'), { spawn } = require('child_process');
+        const tmpHeic = require('path').join(os.tmpdir(), `heic_thumb_${Date.now()}.heic`);
+        const tmpJpeg = require('path').join(os.tmpdir(), `heic_thumb_${Date.now()}.jpg`);
+        fs.writeFileSync(tmpHeic, imageBuffer);
+        await new Promise((resolve, reject) => {
+          const proc = spawn('python3', ['-c', `
+from pillow_heif import open_heif
+from PIL import Image, ImageOps
+heif = open_heif('${tmpHeic}', convert_hdr_to_8bit=True)
+img = ImageOps.exif_transpose(Image.frombytes(heif.mode, heif.size, heif.data))
+img.save('${tmpJpeg}', 'JPEG', quality=90)
+`]);
+          proc.on('close', code => code === 0 ? resolve() : reject(new Error('HEIC→JPEG failed')));
+          proc.on('error', reject);
+        });
+        thumbnailBuffer = fs.readFileSync(tmpJpeg);
+        try { fs.unlinkSync(tmpHeic); fs.unlinkSync(tmpJpeg); } catch {}
+      } catch (e) {
+        console.error('HEIC thumbnail conversion error:', e.message);
+      }
+    }
+    const detections = await detectFacesInImage(processedBuffer, ext, model);
 
     if (detections.length === 0) {
       console.log(`  No faces detected in ${photo.name}`);
@@ -113,7 +138,7 @@ async function indexPhotoWithFaces(photo, token, model = 'hog') {
     // 3. Sauvegarder faces
     for (let i = 0; i < detections.length; i++) {
       const detection = detections[i];
-      const thumbnail = await extractFaceThumbnail(processedBuffer, detection.box);
+      const thumbnail = await extractFaceThumbnail(thumbnailBuffer, detection.box);
       await saveFaceToDb(photo.id, i, detection, thumbnail);
     }
   } catch (err) {

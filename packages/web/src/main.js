@@ -64,10 +64,11 @@ async function testImageIdentify() {
 
       (data.faces || []).forEach((face, i) => {
         const color = colors[i % colors.length];
-        const x = face.box.x * scale;
-        const y = face.box.y * scale;
-        const w = face.box.width * scale;
-        const h = face.box.height * scale;
+        // box coords are percentages (0-1)
+        const x = face.box.x * testImageCanvas.width;
+        const y = face.box.y * testImageCanvas.height;
+        const w = face.box.width * testImageCanvas.width;
+        const h = face.box.height * testImageCanvas.height;
 
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
@@ -625,9 +626,9 @@ function viewPhoto(photoId, name) {
   imgLoader.onload = async () => {
     const faces = await facesPromise;
     const maxW = Math.min(window.innerWidth * 0.92, 1200);
-    const scale = imgLoader.width > maxW ? maxW / imgLoader.width : 1;
-    canvas.width = imgLoader.width * scale;
-    canvas.height = imgLoader.height * scale;
+    const scale = imgLoader.naturalWidth > maxW ? maxW / imgLoader.naturalWidth : 1;
+    canvas.width = imgLoader.naturalWidth * scale;
+    canvas.height = imgLoader.naturalHeight * scale;
 
     const ctx = canvas.getContext('2d');
     ctx.drawImage(imgLoader, 0, 0, canvas.width, canvas.height);
@@ -637,8 +638,12 @@ function viewPhoto(photoId, name) {
       if (!face.bounding_box) return;
       const box = typeof face.bounding_box === 'string' ? JSON.parse(face.bounding_box) : face.bounding_box;
       const color = colors[i % colors.length];
-      const x = box.x * scale, y = box.y * scale;
-      const w = box.width * scale, h = box.height * scale;
+
+      let bx = box.x, by = box.y, bw = box.width, bh = box.height;
+
+      // box coords are percentages (0-1), convert to canvas pixels
+      const x = bx * canvas.width, y = by * canvas.height;
+      const w = bw * canvas.width, h = bh * canvas.height;
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
@@ -665,7 +670,11 @@ window.viewPhoto = viewPhoto;
 function closeLightbox() {
   const lightbox = document.getElementById('photo-lightbox');
   lightbox.classList.add('hidden');
-  document.getElementById('lightbox-img').src = '';
+  const canvas = document.getElementById('lightbox-canvas');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
 }
 window.closeLightbox = closeLightbox;
 

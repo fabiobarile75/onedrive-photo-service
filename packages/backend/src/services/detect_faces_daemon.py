@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 
 # Pre-load heavy libraries at startup
 import face_recognition
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
 
 try:
@@ -37,7 +37,7 @@ def open_image(image_path):
     if ext in ('.heic', '.heif') and HAS_HEIF:
         heif = open_heif(image_path, convert_hdr_to_8bit=True)
         return Image.frombytes(heif.mode, heif.size, heif.data).convert('RGB')
-    return Image.open(image_path).convert('RGB')
+    return ImageOps.exif_transpose(Image.open(image_path)).convert('RGB')
 
 def resize(pil_img, max_size):
     w, h = pil_img.size
@@ -46,17 +46,17 @@ def resize(pil_img, max_size):
     r = max_size / max(w, h)
     return pil_img.resize((int(w * r), int(h * r)), Image.LANCZOS)
 
-def make_faces(locs, encodings, scale_x, scale_y):
+def make_faces(locs, encodings, img_w, img_h):
     faces = []
     for i, (location, encoding) in enumerate(zip(locs, encodings)):
         top, right, bottom, left = location
         faces.append({
             "index": i,
             "box": {
-                "x": int(left * scale_x),
-                "y": int(top * scale_y),
-                "width": int((right - left) * scale_x),
-                "height": int((bottom - top) * scale_y)
+                "x": left / img_w,
+                "y": top / img_h,
+                "width": (right - left) / img_w,
+                "height": (bottom - top) / img_h
             },
             "descriptor": encoding.tolist(),
             "age": None,
@@ -67,13 +67,10 @@ def make_faces(locs, encodings, scale_x, scale_y):
 
 def detect(image_path, model):
     pil_img = open_image(image_path)
-    orig_w, orig_h = pil_img.size
 
     if model == "mtcnn":
         pil_img = resize(pil_img, 1200)
-        resized_w, resized_h = pil_img.size
-        scale_x = orig_w / resized_w if resized_w else 1
-        scale_y = orig_h / resized_h if resized_h else 1
+        w, h = pil_img.size
         mtcnn = get_mtcnn()
         boxes, probs = mtcnn.detect(pil_img)
         if boxes is None:
@@ -82,9 +79,9 @@ def detect(image_path, model):
         locs = []
         for b in boxes:
             x1, y1, x2, y2 = b
-            locs.append((max(0, int(y1)), min(resized_w, int(x2)), min(resized_h, int(y2)), max(0, int(x1))))
+            locs.append((max(0, int(y1)), min(w, int(x2)), min(h, int(y2)), max(0, int(x1))))
         encodings = face_recognition.face_encodings(arr, locs)
-        return make_faces(locs, encodings, scale_x, scale_y)
+        return make_faces(locs, encodings, w, h)
 
     elif model == "mediapipe":
         import mediapipe as mp, urllib.request
@@ -94,9 +91,7 @@ def detect(image_path, model):
                 MEDIAPIPE_MODEL
             )
         pil_img = resize(pil_img, 1200)
-        resized_w, resized_h = pil_img.size
-        scale_x = orig_w / resized_w if resized_w else 1
-        scale_y = orig_h / resized_h if resized_h else 1
+        w, h = pil_img.size
         arr = np.array(pil_img)
         BaseOptions = mp.tasks.BaseOptions
         FaceDetector = mp.tasks.vision.FaceDetector
@@ -113,21 +108,19 @@ def detect(image_path, model):
             locs = []
             for d in (result.detections or []):
                 bbox = d.bounding_box
-                locs.append((max(0, bbox.origin_y), min(resized_w, bbox.origin_x + bbox.width),
-                              min(resized_h, bbox.origin_y + bbox.height), max(0, bbox.origin_x)))
+                locs.append((max(0, bbox.origin_y), min(w, bbox.origin_x + bbox.width),
+                              min(h, bbox.origin_y + bbox.height), max(0, bbox.origin_x)))
             encodings = face_recognition.face_encodings(arr, locs)
-            return make_faces(locs, encodings, scale_x, scale_y)
+            return make_faces(locs, encodings, w, h)
 
     else:
         max_size = 1200 if model == "cnn" else 2000
         pil_img = resize(pil_img, max_size)
-        resized_w, resized_h = pil_img.size
-        scale_x = orig_w / resized_w if resized_w else 1
-        scale_y = orig_h / resized_h if resized_h else 1
+        w, h = pil_img.size
         image = np.array(pil_img)
         locations = face_recognition.face_locations(image, model=model)
         encodings = face_recognition.face_encodings(image, locations)
-        return make_faces(locations, encodings, scale_x, scale_y)
+        return make_faces(locations, encodings, w, h)
 
 # Signal ready
 sys.stderr = open(os.devnull, 'w')
