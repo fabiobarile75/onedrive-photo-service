@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const { getValidAccessToken } = require('./auth/oauth');
 const { initializeDb } = require('./db/init');
+const { authMiddleware } = require('./middleware/auth');
 const indexingRouter = require('./api/indexing');
 const photosRouter = require('./api/photos');
 const facesRouter = require('./api/faces');
@@ -24,16 +25,26 @@ app.use((req, res, next) => {
   }
 });
 
-// Routes API
+// Auth routes — /callback is public, others use authMiddleware internally
+app.use('/api/auth', authRouter);
+
+// All other API routes require JWT
+app.use('/api', authMiddleware);
 app.use('/api/indexing', indexingRouter);
 app.use('/api/photos', photosRouter);
 app.use('/api/faces', facesRouter);
-app.use('/api/auth', authRouter);
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
+
+// Serve frontend static files in production
+const frontendDist = process.env.FRONTEND_DIST || path.join(__dirname, '../../../web/dist');
+if (require('fs').existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get('*', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
+}
 
 async function startServer() {
   try {

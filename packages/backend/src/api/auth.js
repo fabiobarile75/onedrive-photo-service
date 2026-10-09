@@ -1,40 +1,56 @@
 const express = require('express');
-const { getValidAccessToken, startLoginFlow } = require('../auth/oauth');
+const { getAuthorizationUrl, handleOAuthCallback, hasOneDriveTokens, getValidAccessToken } = require('../auth/oauth');
+const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Refresh token endpoint
-router.post('/refresh', async (req, res) => {
+const FRONTEND_URL = process.env.AUTH_FRONTEND_URL || 'http://localhost:5173';
+
+// Initiate OneDrive OAuth — requires JWT auth
+router.get('/onedrive/connect', authMiddleware, (req, res) => {
+  const url = getAuthorizationUrl(req.userId);
+  res.redirect(url);
+});
+
+// OAuth callback — state = userId (set by /onedrive/connect)
+router.get('/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    return res.redirect(`${FRONTEND_URL}?onedrive_error=${encodeURIComponent(error)}`);
+  }
+
+  if (!code || !state) {
+    return res.status(400).send('Missing code or state');
+  }
+
   try {
-    const token = await getValidAccessToken();
-    res.json({ success: true, message: 'Token refreshed successfully' });
+    await handleOAuthCallback(code, state);
+    // Redirect back to frontend — the JWT is already in localStorage
+    res.redirect(`/?onedrive_connected=1`);
   } catch (err) {
-    console.error('Token refresh error:', err);
-    res.status(401).json({ error: 'Token refresh failed', details: err.message });
+    console.error('OAuth callback error:', err);
+    res.redirect(`/?onedrive_error=${encodeURIComponent(err.message)}`);
   }
 });
 
-// Check token validity
-router.get('/status', async (req, res) => {
+// Check OneDrive connection status — requires JWT auth
+router.get('/onedrive/status', authMiddleware, async (req, res) => {
   try {
-    const token = await getValidAccessToken();
-    res.json({ authenticated: true, message: 'Token is valid' });
-  } catch (err) {
-    res.status(401).json({ authenticated: false, error: err.message });
-  }
-});
-
-// Start login flow (opens browser for OAuth)
-router.get('/login', async (req, res) => {
-  try {
-    // In real implementation, this would start the OAuth flow
-    // For now, just indicate to the user they need to run the login script
-    res.json({
-      message: 'Please run: npm run login --workspace=packages/backend',
-      loginUrl: 'http://localhost:3333'
-    });
+    const connected = await hasOneDriveTokens(req.userId);
+    res.json({ connected });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Refresh OneDrive token — requires JWT auth
+router.post('/onedrive/refresh', authMiddleware, async (req, res) => {
+  try {
+    await getValidAccessToken(req.userId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
   }
 });
 

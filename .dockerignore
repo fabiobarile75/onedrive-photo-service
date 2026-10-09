@@ -1,0 +1,8 @@
+node_modules
+packages/*/node_modules
+packages/web/dist
+.git
+*.log
+.env
+.env.local
+tokens.json

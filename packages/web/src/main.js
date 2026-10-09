@@ -1,4 +1,42 @@
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+const AUTH_URL = import.meta.env.VITE_AUTH_URL || 'https://ai-assistant.freeddns.org/auth';
+
+// Auth token management
+function getAuthToken() {
+  return localStorage.getItem('auth_token');
+}
+
+function checkAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    const redirect = encodeURIComponent(window.location.href);
+    window.location.href = `${AUTH_URL}?redirect=${redirect}`;
+    return false;
+  }
+  return true;
+}
+
+async function apiFetch(url, options = {}) {
+  const token = getAuthToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Don't set Content-Type for FormData (let browser set boundary)
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+  }
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    localStorage.removeItem('auth_token');
+    const redirect = encodeURIComponent(window.location.href);
+    window.location.href = `${AUTH_URL}?redirect=${redirect}`;
+    return null;
+  }
+  return res;
+}
+
+if (!checkAuth()) {
+  throw new Error('Redirecting to login');
+}
 
 // DOM Elements
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -18,8 +56,30 @@ const photosGrid = document.getElementById('photos-grid');
 const clustersContainer = document.getElementById('clusters-container');
 const clusterModal = document.getElementById('cluster-modal');
 const modalClose = document.querySelector('.modal-close');
-const authStatusBtn = document.getElementById('auth-status-btn');
-const refreshTokenBtn = document.getElementById('refresh-token-btn');
+
+// Logout
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('auth_token');
+  window.location.href = AUTH_URL;
+});
+
+// OneDrive connect banner
+async function checkOneDriveStatus() {
+  try {
+    const res = await apiFetch(`${API_BASE}/auth/onedrive/status`);
+    if (!res) return;
+    const data = await res.json();
+    const banner = document.getElementById('onedrive-status-banner');
+    if (!data.connected) {
+      banner.style.display = 'flex';
+      document.getElementById('onedrive-connect-btn').href = `${API_BASE}/auth/onedrive/connect`;
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (err) {
+    console.error('OneDrive status check failed:', err);
+  }
+}
 const distanceSlider = document.getElementById('distance-slider');
 const distanceValue = document.getElementById('distance-value');
 const testImageInput = document.getElementById('test-image-input');
@@ -54,7 +114,7 @@ async function testImageIdentify() {
     formData.append('model', model);
     formData.append('threshold', threshold);
 
-    const res = await fetch(`${API_BASE}/faces/identify`, { method: 'POST', body: formData });
+    const res = await apiFetch(`${API_BASE}/faces/identify`, { method: 'POST', body: formData });
     const data = await res.json();
 
     // Draw image on canvas
@@ -112,49 +172,6 @@ async function testImageIdentify() {
 let pollingInterval;
 let facePollingInterval;
 
-// Authentication controls
-authStatusBtn.addEventListener('click', checkAuthStatus);
-refreshTokenBtn.addEventListener('click', refreshToken);
-
-async function checkAuthStatus() {
-  try {
-    authStatusBtn.disabled = true;
-    const res = await fetch(`${API_BASE}/auth/status`);
-    const data = await res.json();
-
-    if (res.ok) {
-      showNotification('✓ OAuth token is valid', 'success');
-    } else {
-      showNotification('⚠ OAuth token invalid or expired', 'error');
-    }
-  } catch (err) {
-    showNotification('✗ Failed to check auth status', 'error');
-  } finally {
-    authStatusBtn.disabled = false;
-  }
-}
-
-async function refreshToken() {
-  try {
-    refreshTokenBtn.disabled = true;
-    refreshTokenBtn.textContent = '⏳ Refreshing...';
-
-    const res = await fetch(`${API_BASE}/auth/refresh`, { method: 'POST' });
-    const data = await res.json();
-
-    if (res.ok) {
-      showNotification('✓ Token refreshed successfully', 'success');
-    } else {
-      showNotification(`✗ Token refresh failed: ${data.details || data.error}`, 'error');
-    }
-  } catch (err) {
-    showNotification(`✗ Error: ${err.message}`, 'error');
-  } finally {
-    refreshTokenBtn.disabled = false;
-    refreshTokenBtn.textContent = '🔄 Refresh Token';
-  }
-}
-
 function showNotification(message, type = 'info') {
   const notification = document.createElement('div');
   notification.className = `notification notification-${type}`;
@@ -199,7 +216,7 @@ async function startFaceDetectionJob() {
     const detectionModel = document.getElementById('detection-model-select').value;
     const limit = parseInt(document.getElementById('face-limit-input').value) || 100;
     const concurrency = parseInt(document.getElementById('face-concurrency-input').value) || 5;
-    const res = await fetch(`${API_BASE}/indexing/faces/start`, {
+    const res = await apiFetch(`${API_BASE}/indexing/faces/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ distance, model: detectionModel, limit, concurrency })
@@ -228,7 +245,7 @@ async function startFaceDetectionJob() {
 
 async function pollFaceDetectionState() {
   try {
-    const res = await fetch(`${API_BASE}/indexing/state`);
+    const res = await apiFetch(`${API_BASE}/indexing/state`);
     const state = await res.json();
 
     if (state.status === 'completed') {
@@ -279,14 +296,14 @@ async function startIndexing() {
     errorSection.classList.add('hidden');
 
     // Check auth first
-    const authRes = await fetch(`${API_BASE}/auth/status`);
+    const authRes = await apiFetch(`${API_BASE}/auth/status`);
     if (!authRes.ok) {
       showError('OAuth token is invalid or expired. Please refresh token first.');
       startBtn.disabled = false;
       return;
     }
 
-    const res = await fetch(`${API_BASE}/indexing/start`, { method: 'POST' });
+    const res = await apiFetch(`${API_BASE}/indexing/start`, { method: 'POST' });
     const data = await res.json();
 
     if (!res.ok) {
@@ -309,7 +326,7 @@ async function startIndexing() {
 
 async function pollIndexingState() {
   try {
-    const res = await fetch(`${API_BASE}/indexing/state`);
+    const res = await apiFetch(`${API_BASE}/indexing/state`);
     const state = await res.json();
 
     if (state.status === 'completed') {
@@ -373,7 +390,7 @@ function showError(message) {
 
 async function loadClusters() {
   try {
-    const res = await fetch(`${API_BASE}/faces/clusters`);
+    const res = await apiFetch(`${API_BASE}/faces/clusters`);
     const clusters = await res.json();
 
     if (clusters.length === 0) {
@@ -412,7 +429,7 @@ function emotionEmoji(emotion) {
 
 async function openClusterDetail(clusterId) {
   try {
-    const res = await fetch(`${API_BASE}/faces/clusters/${clusterId}`);
+    const res = await apiFetch(`${API_BASE}/faces/clusters/${clusterId}`);
     const faces = await res.json();
 
     document.querySelector('#cluster-modal h2').innerHTML =
@@ -451,7 +468,7 @@ window.openClusterDetail = openClusterDetail;
 async function renameCluster(clusterId) {
   const name = prompt('Enter a name for this person:');
   if (!name) return;
-  await fetch(`${API_BASE}/faces/clusters/${clusterId}/name`, {
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/name`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name })
@@ -463,14 +480,14 @@ window.renameCluster = renameCluster;
 
 async function removeFaceFromCluster(clusterId, faceId) {
   if (!confirm('Remove this face from the cluster?')) return;
-  await fetch(`${API_BASE}/faces/clusters/${clusterId}/faces/${faceId}`, { method: 'DELETE' });
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/faces/${faceId}`, { method: 'DELETE' });
   openClusterDetail(clusterId);
   loadClusters();
 }
 window.removeFaceFromCluster = removeFaceFromCluster;
 
 async function moveFaceToCluster(fromClusterId, faceId) {
-  const res = await fetch(`${API_BASE}/faces/clusters`);
+  const res = await apiFetch(`${API_BASE}/faces/clusters`);
   const clusters = await res.json();
   const others = clusters.filter(c => c.person_cluster_id !== fromClusterId);
   if (others.length === 0) { alert('No other clusters to move to.'); return; }
@@ -482,7 +499,7 @@ async function moveFaceToCluster(fromClusterId, faceId) {
   if (idx < 0 || idx >= others.length) { alert('Invalid selection'); return; }
 
   const targetId = others[idx].person_cluster_id;
-  await fetch(`${API_BASE}/faces/${faceId}/cluster`, {
+  await apiFetch(`${API_BASE}/faces/${faceId}/cluster`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clusterId: targetId })
@@ -493,7 +510,7 @@ async function moveFaceToCluster(fromClusterId, faceId) {
 window.moveFaceToCluster = moveFaceToCluster;
 
 async function showMergeDialog(clusterId) {
-  const res = await fetch(`${API_BASE}/faces/clusters`);
+  const res = await apiFetch(`${API_BASE}/faces/clusters`);
   const clusters = await res.json();
   const others = clusters.filter(c => c.person_cluster_id !== clusterId);
   if (others.length === 0) { alert('No other clusters to merge with.'); return; }
@@ -504,7 +521,7 @@ async function showMergeDialog(clusterId) {
   const idx = parseInt(input) - 1;
   if (idx < 0 || idx >= others.length) { alert('Invalid selection'); return; }
 
-  await fetch(`${API_BASE}/faces/clusters/${clusterId}/merge/${others[idx].person_cluster_id}`, { method: 'POST' });
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/merge/${others[idx].person_cluster_id}`, { method: 'POST' });
   closeClustersModal();
   loadClusters();
 }
@@ -519,10 +536,10 @@ async function loadPhotos(clusterId = null) {
   try {
     let url, data;
     if (clusterId) {
-      const res = await fetch(`${API_BASE}/photos/by-cluster/${clusterId}?limit=200`);
+      const res = await apiFetch(`${API_BASE}/photos/by-cluster/${clusterId}?limit=200`);
       data = await res.json();
     } else {
-      const res = await fetch(`${API_BASE}/photos?limit=50`);
+      const res = await apiFetch(`${API_BASE}/photos?limit=50`);
       data = await res.json();
     }
 
@@ -567,7 +584,7 @@ gallerySearch.addEventListener('input', async () => {
   const q = gallerySearch.value.trim().toLowerCase();
   if (!q) { gallerySuggestions.style.display = 'none'; return; }
 
-  const res = await fetch(`${API_BASE}/faces/clusters`);
+  const res = await apiFetch(`${API_BASE}/faces/clusters`);
   const clusters = await res.json();
   const matches = clusters.filter(c => {
     const name = (c.cluster_name || 'Person ' + c.person_cluster_id.substring(0, 6)).toLowerCase();
@@ -604,7 +621,7 @@ window.selectGalleryCluster = selectGalleryCluster;
 
 async function loadStats() {
   try {
-    const res = await fetch(`${API_BASE}/faces/stats/summary`);
+    const res = await apiFetch(`${API_BASE}/faces/stats/summary`);
     const stats = await res.json();
 
     document.getElementById('stat-photos').textContent = stats.total_photos || 0;
@@ -697,7 +714,7 @@ function closeLightbox() {
 window.closeLightbox = closeLightbox;
 
 // Initial load
-checkAuthStatus();
+checkOneDriveStatus();
 loadStats();
 pollIndexingState();
 pollFaceDetectionState();

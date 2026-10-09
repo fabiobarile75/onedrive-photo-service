@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.4.0",
     "node-fetch": "^3.3.2",
     "open": "^11.0.4",

@@ -12,12 +12,11 @@
       <h1>OneDrive Photo Indexer</h1>
       <p class="subtitle">Index and manage your OneDrive photos with face recognition</p>
       <div class="header-controls">
-        <button id="auth-status-btn" class="btn btn-sm btn-secondary" title="Check authentication status">
-          🔐 Auth Status
-        </button>
-        <button id="refresh-token-btn" class="btn btn-sm btn-secondary" title="Refresh OAuth token">
-          🔄 Refresh Token
-        </button>
+        <div id="onedrive-status-banner" style="display:none;" class="onedrive-banner">
+          <span id="onedrive-status-text">⚠ OneDrive not connected</span>
+          <a id="onedrive-connect-btn" href="#" class="btn btn-sm btn-primary">Connect OneDrive</a>
+        </div>
+        <button id="logout-btn" class="btn btn-sm btn-secondary" title="Logout">🚪 Logout</button>
       </div>
     </header>
 

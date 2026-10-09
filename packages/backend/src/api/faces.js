@@ -7,12 +7,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 
 const router = express.Router();
 
-// Get all clusters with face counts
 router.get('/clusters', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const result = await client.query(`
         SELECT
@@ -24,278 +22,183 @@ router.get('/clusters', async (req, res) => {
           MAX(pf.gender) as gender,
           (SELECT encode(pf2.thumbnail, 'base64') FROM photo_faces pf2
            WHERE pf2.person_cluster_id = pf.person_cluster_id
+           AND pf2.user_id = pf.user_id
            AND pf2.thumbnail IS NOT NULL LIMIT 1) as thumbnail
         FROM photo_faces pf
-        LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id
-        WHERE pf.person_cluster_id IS NOT NULL
+        LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id
+        WHERE pf.person_cluster_id IS NOT NULL AND pf.user_id = $1
         GROUP BY pf.person_cluster_id, pc.name
         ORDER BY photo_count DESC
-      `);
-
+      `, [req.userId]);
       res.json(result.rows);
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching clusters:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get faces in a cluster
 router.get('/clusters/:clusterId', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const result = await client.query(`
-        SELECT
-          pf.id,
-          pf.photo_id,
-          pf.face_index,
-          pf.age,
-          pf.gender,
-          pf.expressions,
-          pf.bounding_box,
-          encode(pf.thumbnail, 'base64') as thumbnail,
-          p.name as photo_name,
-          p.taken_at
+        SELECT pf.id, pf.photo_id, pf.face_index, pf.age, pf.gender, pf.expressions,
+               pf.bounding_box, encode(pf.thumbnail, 'base64') as thumbnail,
+               p.name as photo_name, p.taken_at
         FROM photo_faces pf
-        JOIN photos p ON pf.photo_id = p.id
-        WHERE pf.person_cluster_id = $1
+        JOIN photos p ON pf.photo_id = p.id AND p.user_id = pf.user_id
+        WHERE pf.person_cluster_id = $1 AND pf.user_id = $2
         ORDER BY p.taken_at DESC NULLS LAST, pf.photo_id
-      `, [req.params.clusterId]);
-
+      `, [req.params.clusterId, req.userId]);
       res.json(result.rows);
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching cluster details:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get faces in a specific photo
 router.get('/photo/:photoId', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const result = await client.query(`
-        SELECT
-          pf.id,
-          pf.face_index,
-          pf.bounding_box,
-          pf.age,
-          pf.gender,
-          pf.expressions,
-          pf.person_cluster_id,
-          pc.name as cluster_name,
-          encode(pf.thumbnail, 'base64') as thumbnail,
-          (p.metadata->'photo'->>'orientation')::int as exif_orientation
+        SELECT pf.id, pf.face_index, pf.bounding_box, pf.age, pf.gender, pf.expressions,
+               pf.person_cluster_id, pc.name as cluster_name,
+               encode(pf.thumbnail, 'base64') as thumbnail,
+               (p.metadata->'photo'->>'orientation')::int as exif_orientation
         FROM photo_faces pf
-        LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id
-        JOIN photos p ON p.id = pf.photo_id
-        WHERE pf.photo_id = $1
+        LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id
+        JOIN photos p ON p.id = pf.photo_id AND p.user_id = pf.user_id
+        WHERE pf.photo_id = $1 AND pf.user_id = $2
         ORDER BY pf.face_index
-      `, [req.params.photoId]);
-
+      `, [req.params.photoId, req.userId]);
       res.json(result.rows);
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching photo faces:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get face thumbnail
 router.get('/thumbnail/:faceId', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const result = await client.query(
-        'SELECT thumbnail FROM photo_faces WHERE id = $1',
-        [req.params.faceId]
+        'SELECT thumbnail FROM photo_faces WHERE id = $1 AND user_id = $2',
+        [req.params.faceId, req.userId]
       );
-
-      if (result.rows.length === 0) {
-        return res.status(404).json({ error: 'Face not found' });
-      }
-
-      const thumbnail = result.rows[0].thumbnail;
-      res.type('image/jpeg').send(thumbnail);
-    } finally {
-      client.release();
-    }
+      if (result.rows.length === 0) return res.status(404).json({ error: 'Face not found' });
+      res.type('image/jpeg').send(result.rows[0].thumbnail);
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching thumbnail:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Merge two clusters
 router.post('/clusters/merge', async (req, res) => {
   try {
     const { sourceClusterId, targetClusterId } = req.body;
-
-    if (!sourceClusterId || !targetClusterId) {
-      return res.status(400).json({ error: 'sourceClusterId and targetClusterId required' });
-    }
-
+    if (!sourceClusterId || !targetClusterId) return res.status(400).json({ error: 'sourceClusterId and targetClusterId required' });
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       await client.query(
         `UPDATE photo_faces SET person_cluster_id = $1
-         WHERE person_cluster_id = $2`,
-        [targetClusterId, sourceClusterId]
+         WHERE person_cluster_id = $2 AND user_id = $3`,
+        [targetClusterId, sourceClusterId, req.userId]
       );
-
       res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error merging clusters:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Split cluster (move specific faces to new cluster)
 router.post('/clusters/:clusterId/split', async (req, res) => {
   try {
     const { faceIds } = req.body;
-
-    if (!Array.isArray(faceIds) || faceIds.length === 0) {
-      return res.status(400).json({ error: 'faceIds array required' });
-    }
-
+    if (!Array.isArray(faceIds) || faceIds.length === 0) return res.status(400).json({ error: 'faceIds array required' });
     const newClusterId = `split_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       await client.query(
         `UPDATE photo_faces SET person_cluster_id = $1
-         WHERE id = ANY($2)`,
-        [newClusterId, faceIds]
+         WHERE id = ANY($2) AND user_id = $3`,
+        [newClusterId, faceIds, req.userId]
       );
-
       res.json({ newClusterId });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error splitting cluster:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get unclassified faces
 router.get('/unclassified/all', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
-
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const result = await client.query(`
-        SELECT
-          pf.id,
-          pf.photo_id,
-          pf.face_index,
-          pf.age,
-          pf.gender,
-          pf.bounding_box,
-          encode(pf.thumbnail, 'base64') as thumbnail,
-          p.name as photo_name,
-          p.taken_at
+        SELECT pf.id, pf.photo_id, pf.face_index, pf.age, pf.gender, pf.bounding_box,
+               encode(pf.thumbnail, 'base64') as thumbnail, p.name as photo_name, p.taken_at
         FROM photo_faces pf
-        JOIN photos p ON pf.photo_id = p.id
-        WHERE pf.person_cluster_id IS NULL
+        JOIN photos p ON pf.photo_id = p.id AND p.user_id = pf.user_id
+        WHERE pf.person_cluster_id IS NULL AND pf.user_id = $1
         ORDER BY p.taken_at DESC NULLS LAST, pf.photo_id
-        LIMIT $1 OFFSET $2
-      `, [limit, offset]);
-
+        LIMIT $2 OFFSET $3
+      `, [req.userId, limit, offset]);
       const countResult = await client.query(
-        'SELECT COUNT(*) as count FROM photo_faces WHERE person_cluster_id IS NULL'
+        'SELECT COUNT(*) as count FROM photo_faces WHERE person_cluster_id IS NULL AND user_id = $1',
+        [req.userId]
       );
-
-      res.json({
-        faces: result.rows,
-        total: parseInt(countResult.rows[0].count),
-        limit,
-        offset
-      });
-    } finally {
-      client.release();
-    }
+      res.json({ faces: result.rows, total: parseInt(countResult.rows[0].count), limit, offset });
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching unclassified faces:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Manually assign face to cluster
 router.post('/faces/:faceId/cluster', async (req, res) => {
   try {
     const { clusterId } = req.body;
-
-    if (!clusterId) {
-      return res.status(400).json({ error: 'clusterId required' });
-    }
-
+    if (!clusterId) return res.status(400).json({ error: 'clusterId required' });
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       await client.query(
-        `UPDATE photo_faces SET person_cluster_id = $1
-         WHERE id = $2`,
-        [clusterId, req.params.faceId]
+        `UPDATE photo_faces SET person_cluster_id = $1 WHERE id = $2 AND user_id = $3`,
+        [clusterId, req.params.faceId, req.userId]
       );
-
       res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error assigning face to cluster:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Remove face from cluster
 router.delete('/clusters/:clusterId/faces/:faceId', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
     try {
       await client.query(
-        `UPDATE photo_faces SET person_cluster_id = NULL WHERE id = $1 AND person_cluster_id = $2`,
-        [req.params.faceId, req.params.clusterId]
+        `UPDATE photo_faces SET person_cluster_id = NULL
+         WHERE id = $1 AND person_cluster_id = $2 AND user_id = $3`,
+        [req.params.faceId, req.params.clusterId, req.userId]
       );
       res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error removing face from cluster:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Rename cluster
 router.put('/clusters/:clusterId/name', async (req, res) => {
   try {
     const { name } = req.body;
@@ -303,73 +206,57 @@ router.put('/clusters/:clusterId/name', async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query(
-        `INSERT INTO person_clusters (id, name, updated_at) VALUES ($1, $2, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET name = $2, updated_at = CURRENT_TIMESTAMP`,
-        [req.params.clusterId, name]
+        `INSERT INTO person_clusters (id, user_id, name, updated_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+         ON CONFLICT (id, user_id) DO UPDATE SET name = $3, updated_at = CURRENT_TIMESTAMP`,
+        [req.params.clusterId, req.userId, name]
       );
       res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error renaming cluster:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Merge cluster into another
 router.post('/clusters/:clusterId/merge/:targetId', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
     try {
       await client.query(
-        `UPDATE photo_faces SET person_cluster_id = $1 WHERE person_cluster_id = $2`,
-        [req.params.targetId, req.params.clusterId]
+        `UPDATE photo_faces SET person_cluster_id = $1
+         WHERE person_cluster_id = $2 AND user_id = $3`,
+        [req.params.targetId, req.params.clusterId, req.userId]
       );
       res.json({ success: true });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error merging clusters:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get stats
 router.get('/stats/summary', async (req, res) => {
   try {
     const pool = getPool();
     const client = await pool.connect();
-
     try {
       const stats = await client.query(`
         SELECT
-          (SELECT COUNT(*) FROM photos) as total_photos,
-          (SELECT COUNT(*) FROM photo_faces) as total_faces,
-          (SELECT COUNT(DISTINCT person_cluster_id) FROM photo_faces WHERE person_cluster_id IS NOT NULL) as clusters,
-          (SELECT COUNT(*) FROM photo_faces WHERE person_cluster_id IS NULL) as unclassified_faces,
-          (SELECT AVG(age) FROM photo_faces WHERE age IS NOT NULL)::INT as avg_age
-      `);
-
+          (SELECT COUNT(*) FROM photos WHERE user_id = $1) as total_photos,
+          (SELECT COUNT(*) FROM photo_faces WHERE user_id = $1) as total_faces,
+          (SELECT COUNT(DISTINCT person_cluster_id) FROM photo_faces WHERE person_cluster_id IS NOT NULL AND user_id = $1) as clusters,
+          (SELECT COUNT(*) FROM photo_faces WHERE person_cluster_id IS NULL AND user_id = $1) as unclassified_faces,
+          (SELECT AVG(age) FROM photo_faces WHERE age IS NOT NULL AND user_id = $1)::INT as avg_age
+      `, [req.userId]);
       res.json(stats.rows[0]);
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
-    console.error('Error fetching stats:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Identify faces in an uploaded image
 router.post('/identify', (req, res, next) => {
   upload.single('image')(req, res, (err) => {
-    if (err) {
-      console.error('Multer error:', err);
-      return res.status(400).json({ error: 'Upload error: ' + err.message });
-    }
+    if (err) return res.status(400).json({ error: 'Upload error: ' + err.message });
     next();
   });
 }, async (req, res) => {
@@ -414,17 +301,14 @@ print('ok')
         imageBuffer = req.file.buffer;
       }
     }
+
     const model = ['hog', 'cnn', 'mediapipe', 'mtcnn'].includes(req.body?.model) ? req.body.model : 'hog';
     const detectedFaces = await detectFacesInImage(imageBuffer, '.jpg', model);
 
-    // Convert to JPEG for browser display
     let previewBase64;
     try {
-      const jpegBuf = await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer();
-      previewBase64 = jpegBuf.toString('base64');
-    } catch (e) {
-      previewBase64 = null;
-    }
+      previewBase64 = (await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer()).toString('base64');
+    } catch (e) { previewBase64 = null; }
 
     if (detectedFaces.length === 0) return res.json({ faces: [], preview: previewBase64 });
 
@@ -434,26 +318,19 @@ print('ok')
       const dbFaces = await client.query(
         `SELECT pf.id, pf.descriptor, pf.person_cluster_id, pc.name as cluster_name
          FROM photo_faces pf
-         LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id
-         WHERE pf.descriptor IS NOT NULL AND pf.person_cluster_id IS NOT NULL`
+         LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id
+         WHERE pf.descriptor IS NOT NULL AND pf.person_cluster_id IS NOT NULL AND pf.user_id = $1`,
+        [req.userId]
       );
 
       const threshold = parseFloat(req.body?.threshold) || 1.0;
       const results = detectedFaces.map(face => {
         const detDesc = Buffer.from(new Float32Array(face.descriptor).buffer);
-        let minDist = Infinity;
-        let bestClusterId = null;
-        let bestClusterName = null;
-
+        let minDist = Infinity, bestClusterId = null, bestClusterName = null;
         for (const row of dbFaces.rows) {
           const dist = faceDistance(detDesc, row.descriptor);
-          if (dist < minDist) {
-            minDist = dist;
-            bestClusterId = row.person_cluster_id;
-            bestClusterName = row.cluster_name;
-          }
+          if (dist < minDist) { minDist = dist; bestClusterId = row.person_cluster_id; bestClusterName = row.cluster_name; }
         }
-
         return {
           box: face.box,
           clusterId: minDist < threshold ? bestClusterId : null,
@@ -463,9 +340,7 @@ print('ok')
       });
 
       res.json({ faces: results, preview: previewBase64 });
-    } finally {
-      client.release();
-    }
+    } finally { client.release(); }
   } catch (err) {
     console.error('Identify error:', err.stack || err.message);
     res.status(500).json({ error: err.message });

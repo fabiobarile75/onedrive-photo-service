@@ -3,33 +3,25 @@ const { startIndexing, startFaceDetection, getIndexingState } = require('../serv
 
 const router = express.Router();
 
-// Start indexing
 router.post('/start', async (req, res) => {
-  console.log('POST /start - received request');
   res.json({ status: 'started' });
-  console.log('POST /start - response sent');
-  startIndexing().catch(err => console.error('Indexing error:', err));
+  startIndexing(req.userId).catch(err => console.error('Indexing error:', err));
 });
 
-// Start face detection
 router.post('/faces/start', async (req, res) => {
-  console.log('POST /faces/start - received request, body:', req.body);
-  const distance = parseFloat(req.body?.distance) || 0.6;
+  const distance = parseFloat(req.body?.distance) || 1.0;
   const model = ['hog', 'cnn', 'mediapipe', 'mtcnn'].includes(req.body?.model) ? req.body.model : 'hog';
   const limit = Math.min(parseInt(req.body?.limit) || 100, 10000);
   const concurrency = Math.min(Math.max(parseInt(req.body?.concurrency) || 5, 1), 20);
-  console.log('Using distance:', distance, 'model:', model, 'limit:', limit, 'concurrency:', concurrency);
   res.json({ status: 'started' });
-  startFaceDetection(distance, model, limit, concurrency).catch(err => console.error('Face detection error:', err));
+  startFaceDetection(req.userId, distance, model, limit, concurrency).catch(err => console.error('Face detection error:', err));
 });
 
-// Get indexing state
 router.get('/state', async (req, res) => {
   try {
-    const state = await getIndexingState();
+    const state = await getIndexingState(req.userId);
     res.json(state);
   } catch (err) {
-    console.error('Error getting indexing state:', err);
     res.status(500).json({ error: err.message });
   }
 });

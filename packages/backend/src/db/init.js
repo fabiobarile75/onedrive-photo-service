@@ -12,24 +12,36 @@ async function initializeDb() {
   const client = await pool.connect();
 
   try {
-    // Create tables directly in current database
-    // Create photos table
     await client.query(`
-      CREATE TABLE IF NOT EXISTS photos (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        taken_at TIMESTAMP,
-        metadata JSONB NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      CREATE TABLE IF NOT EXISTS user_onedrive_tokens (
+        user_id TEXT PRIMARY KEY,
+        access_token TEXT,
+        refresh_token TEXT NOT NULL,
+        expires_at BIGINT,
+        scope TEXT,
+        token_type TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // Create photo_faces table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS photos (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        taken_at TIMESTAMP,
+        metadata JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id, user_id)
+      );
+    `);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS photo_faces (
         id SERIAL PRIMARY KEY,
-        photo_id TEXT REFERENCES photos(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        photo_id TEXT NOT NULL,
         face_index INT NOT NULL,
         bounding_box JSONB NOT NULL,
         descriptor BYTEA NOT NULL,
@@ -43,23 +55,21 @@ async function initializeDb() {
       );
     `);
 
-    // Create indexes
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_photos_taken_at ON photos(taken_at DESC);
+      CREATE TABLE IF NOT EXISTS person_clusters (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id, user_id)
+      );
     `);
 
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_photo_faces_photo_id ON photo_faces(photo_id);
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_photo_faces_cluster_id ON photo_faces(person_cluster_id);
-    `);
-
-    // Create indexing state table
     await client.query(`
       CREATE TABLE IF NOT EXISTS indexing_state (
         id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'idle',
         total_items INT DEFAULT 0,
         processed_items INT DEFAULT 0,
@@ -71,6 +81,19 @@ async function initializeDb() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Indexes
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_photos_user_taken_at ON photos(user_id, taken_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_photo_faces_user_id ON photo_faces(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_photo_faces_photo_id ON photo_faces(photo_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_photo_faces_cluster_id ON photo_faces(person_cluster_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_indexing_state_user_id ON indexing_state(user_id);`);
+
+    // Migrations for existing installations
+    await client.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
+    await client.query(`ALTER TABLE photo_faces ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
+    await client.query(`ALTER TABLE person_clusters ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
+    await client.query(`ALTER TABLE indexing_state ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
 
     console.log('Database initialized successfully');
   } finally {

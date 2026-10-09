@@ -147,7 +147,7 @@ async function extractFaceThumbnail(imageBuffer, box, size = 256) {
   }
 }
 
-async function saveFaceToDb(photoId, faceIndex, detection, thumbnailBuffer) {
+async function saveFaceToDb(photoId, userId, faceIndex, detection, thumbnailBuffer) {
   const pool = getPool();
   const client = await pool.connect();
 
@@ -157,11 +157,12 @@ async function saveFaceToDb(photoId, faceIndex, detection, thumbnailBuffer) {
 
     await client.query(
       `INSERT INTO photo_faces
-       (photo_id, face_index, bounding_box, descriptor, age, gender, expressions, thumbnail)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (photo_id, user_id, face_index, bounding_box, descriptor, age, gender, expressions, thumbnail)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT DO NOTHING`,
       [
         photoId,
+        userId,
         faceIndex,
         JSON.stringify(box),
         descriptor,
@@ -188,18 +189,17 @@ function faceDistance(desc1, desc2) {
   return Math.sqrt(sum);
 }
 
-async function clusterFacesByPerson(threshold = 1.0) {
+async function clusterFacesByPerson(threshold = 1.0, userId) {
   const pool = getPool();
   const client = await pool.connect();
 
   try {
-    // Reset existing clusters
-    await client.query(`UPDATE photo_faces SET person_cluster_id = NULL`);
-    console.log('Fetching all faces for clustering...');
+    await client.query(`UPDATE photo_faces SET person_cluster_id = NULL WHERE user_id = $1`, [userId]);
     const allFaces = await client.query(
       `SELECT id, photo_id, descriptor FROM photo_faces
-       WHERE descriptor IS NOT NULL
-       ORDER BY photo_id, face_index`
+       WHERE descriptor IS NOT NULL AND user_id = $1
+       ORDER BY photo_id, face_index`,
+      [userId]
     );
 
     const faces = allFaces.rows.map(row => ({
