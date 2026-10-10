@@ -4,25 +4,37 @@ const { getPool } = require('../db/init');
 const { convertPhotoBuffer } = require('./imageConverter');
 const { detectFacesInImage, extractFaceThumbnail, saveFaceToDb, clusterFacesByPerson } = require('./faceDetector');
 
-async function downloadPhotoBuffer(photoId, downloadUrl, token) {
-  const res = await fetch(downloadUrl);
-  if (res.ok) return Buffer.from(await res.arrayBuffer());
-
-  const res2 = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res2.ok) throw new Error(`Failed to download photo ${photoId}: ${res2.status}`);
-  return Buffer.from(await res2.arrayBuffer());
+// Per-user metrics buffer (last 600 events = ~10 min at 1/s)
+const metricsBuffers = new Map();
+function getMetricsBuffer(userId) {
+  if (!metricsBuffers.has(userId)) metricsBuffers.set(userId, []);
+  return metricsBuffers.get(userId);
+}
+function pushMetric(userId, downloadMs, detectMs) {
+  const buf = getMetricsBuffer(userId);
+  buf.push({ ts: Date.now(), downloadMs, detectMs });
+  if (buf.length > 600) buf.shift();
+}
+function getFaceDetectionMetrics(userId) {
+  return getMetricsBuffer(userId);
 }
 
-async function fetchAllPhotosMetadata(userId) {
+async function downloadPhotoBuffer(photoId, downloadUrl, token) {
+  const res = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Failed to download photo ${photoId}: ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+async function fetchAndSavePhotosMetadata(userId, stateId) {
   const token = await getValidAccessToken(userId);
   const pool = getPool();
 
-  let allItems = [];
   let url = "https://graph.microsoft.com/v1.0/me/drive/special/cameraroll/delta" +
     "?$select=id,name,size,createdDateTime,lastModifiedDateTime,photo,location,file,deleted,@microsoft.graph.downloadUrl" +
     "&$top=1000";
 
   let page = 0;
+  let totalProcessed = 0;
 
   while (url) {
     page++;
@@ -30,30 +42,33 @@ async function fetchAllPhotosMetadata(userId) {
     const data = await res.json();
     if (data.error) throw new Error(`Graph API error: ${JSON.stringify(data.error)}`);
     const items = (data.value || []).filter(i => i.file && !i.deleted);
-    allItems = allItems.concat(items);
+
+    const client = await pool.connect();
+    try {
+      for (const photo of items) {
+        const takenAt = photo.photo?.takenDateTime || photo.createdDateTime;
+        await client.query(
+          `INSERT INTO photos (id, user_id, name, taken_at, metadata)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id, user_id) DO UPDATE SET
+             metadata = $5, updated_at = CURRENT_TIMESTAMP`,
+          [photo.id, userId, photo.name, takenAt, JSON.stringify(photo)]
+        );
+      }
+    } finally {
+      client.release();
+    }
+
+    totalProcessed += items.length;
+    await pool.query(
+      `UPDATE indexing_state SET processed_items = $1, current_page = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+      [totalProcessed, page, stateId]
+    );
+
     url = data['@odata.nextLink'] || null;
   }
 
-  return allItems;
-}
-
-async function savePhotosToDb(photos, userId) {
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    for (const photo of photos) {
-      const takenAt = photo.photo?.takenDateTime || photo.createdDateTime;
-      await client.query(
-        `INSERT INTO photos (id, user_id, name, taken_at, metadata)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id, user_id) DO UPDATE SET
-           metadata = $5, updated_at = CURRENT_TIMESTAMP`,
-        [photo.id, userId, photo.name, takenAt, JSON.stringify(photo)]
-      );
-    }
-  } finally {
-    client.release();
-  }
+  return totalProcessed;
 }
 
 async function indexPhotoWithFaces(photo, token, model, userId) {
@@ -117,42 +132,41 @@ async function updateIndexingStatus(status, userId) {
 async function startIndexing(userId) {
   const pool = getPool();
   let client = await pool.connect();
+  let stateId;
 
   try {
-    await client.query(
+    const stateRes = await client.query(
       `INSERT INTO indexing_state (user_id, status, started_at, created_at, updated_at)
-       VALUES ($1, 'indexing', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+       VALUES ($1, 'indexing', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       RETURNING id`,
       [userId]
     );
+    stateId = stateRes.rows[0].id;
     client.release();
 
-    const photos = await fetchAllPhotosMetadata(userId);
-    console.log(`Found ${photos.length} photos for user ${userId}`);
-    await savePhotosToDb(photos, userId);
+    console.log(`Starting indexing for user ${userId}`);
+    const processed = await fetchAndSavePhotosMetadata(userId, stateId);
+    console.log(`Indexed ${processed} photos for user ${userId}`);
 
-    client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE indexing_state SET status = 'completed', total_items = $1, processed_items = $1,
-         completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $2 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $2)`,
-        [photos.length, userId]
-      );
-    } finally {
-      client.release();
-    }
+    await pool.query(
+      `UPDATE indexing_state SET status = 'completed', total_items = $1, processed_items = $1,
+       completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [processed, stateId]
+    );
 
-    return { success: true, total: photos.length };
+    return { success: true, total: processed };
   } catch (err) {
     console.error('Indexing error:', err);
-    const c = await pool.connect();
-    try {
-      await c.query(
-        `UPDATE indexing_state SET status = 'error', error = $1, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $2 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $2)`,
-        [err.message, userId]
-      );
-    } finally { c.release(); }
+    if (stateId) {
+      const pool = getPool();
+      const c = await pool.connect();
+      try {
+        await c.query(
+          `UPDATE indexing_state SET status = 'error', error = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+          [err.message, stateId]
+        );
+      } finally { c.release(); }
+    }
     throw err;
   }
 }
@@ -163,7 +177,7 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
 
   try {
     await client.query(
-      `INSERT INTO indexing_state (user_id, status, started_at, created_at, updated_at)
+      `INSERT INTO face_detection_state (user_id, status, started_at, created_at, updated_at)
        VALUES ($1, 'indexing', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [userId]
     );
@@ -173,47 +187,126 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
 
     const token = await getValidAccessToken(userId);
 
-    const result = await pool.query(`SELECT id, name FROM photos WHERE user_id = $1 LIMIT $2`, [userId, limit]);
+    const result = await pool.query(
+      `SELECT id, name FROM photos WHERE user_id = $1
+       AND lower(substring(name from '\\.[^.]+$')) NOT IN ('.mov', '.mp4', '.3gp', '.avi', '.mkv', '.wmv')
+       LIMIT $2`,
+      [userId, limit]
+    );
     const photos = result.rows.map(r => ({ id: r.id, name: r.name }));
 
     await pool.query(
-      `UPDATE indexing_state SET total_items = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $2)`,
+      `UPDATE face_detection_state SET total_items = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $2 AND id = (SELECT MAX(id) FROM face_detection_state WHERE user_id = $2)`,
       [photos.length, userId]
     );
 
     let processed = 0;
+    const BUFFER_SIZE = concurrency * 2;
 
-    async function processPhoto(photo) {
-      const itemRes = await fetch(
-        `https://graph.microsoft.com/v1.0/me/drive/items/${photo.id}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const itemData = await itemRes.json();
-      photo['@microsoft.graph.downloadUrl'] = itemData['@microsoft.graph.downloadUrl'];
-      await indexPhotoWithFaces(photo, token, model, userId);
-      processed++;
-      if (processed % 10 === 0) {
-        await pool.query(
-          `UPDATE indexing_state SET processed_items = $1, updated_at = CURRENT_TIMESTAMP
-           WHERE user_id = $2 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $2)`,
-          [processed, userId]
-        );
+    // Bounded async queue
+    class AsyncQueue {
+      constructor(maxSize) {
+        this.maxSize = maxSize;
+        this.items = [];
+        this.waiters = [];
+        this.pushWaiters = [];
+        this.closed = false;
+      }
+      async push(item) {
+        while (this.items.length >= this.maxSize) {
+          await new Promise(r => this.pushWaiters.push(r));
+        }
+        this.items.push(item);
+        if (this.waiters.length) this.waiters.shift()();
+      }
+      async pop() {
+        while (this.items.length === 0) {
+          if (this.closed) return null;
+          await new Promise(r => this.waiters.push(r));
+        }
+        const item = this.items.shift();
+        if (this.pushWaiters.length) this.pushWaiters.shift()();
+        return item;
+      }
+      close() {
+        this.closed = true;
+        this.waiters.forEach(r => r());
       }
     }
 
-    for (let i = 0; i < photos.length; i += concurrency) {
-      await Promise.all(photos.slice(i, i + concurrency).map(processPhoto));
+    const queue = new AsyncQueue(BUFFER_SIZE);
+
+    // Producer: download photos concurrently and push to queue
+    async function producer() {
+      const semaphore = Array(concurrency).fill(null);
+      let idx = 0;
+      async function worker() {
+        while (idx < photos.length) {
+          const photo = photos[idx++];
+          if (!photo) break;
+          try {
+            const url = `https://graph.microsoft.com/v1.0/me/drive/items/${photo.id}/content`;
+            const dlStart = Date.now();
+            const buf = await downloadPhotoBuffer(photo.id, url, token);
+            const downloadMs = Date.now() - dlStart;
+            await queue.push({ photo, buf, downloadMs });
+          } catch (e) {
+            console.error(`Download error ${photo.name}:`, e.message);
+          }
+        }
+      }
+      await Promise.all(semaphore.map(() => worker()));
+      queue.close();
     }
 
-    await updateIndexingStatus('clustering', userId);
+    // Consumer: process photos from queue one by one
+    async function consumer() {
+      while (true) {
+        const item = await queue.pop();
+        if (!item) break;
+        const { photo, buf, downloadMs } = item;
+        try {
+          const ext = require('path').extname(photo.name).toLowerCase() || '.jpg';
+          const processedBuffer = await convertPhotoBuffer(buf, photo.name);
+          const detectStart = Date.now();
+          const detections = await detectFacesInImage(processedBuffer, ext, model);
+          const detectMs = Date.now() - detectStart;
+          pushMetric(userId, downloadMs, detectMs);
+          if (detections.length > 0) {
+            for (let i = 0; i < detections.length; i++) {
+              const thumbnail = await extractFaceThumbnail(processedBuffer, detections[i].box);
+              await saveFaceToDb(photo.id, userId, i, detections[i], thumbnail);
+            }
+          }
+        } catch (e) {
+          console.error(`Error processing ${photo.name}:`, e.message);
+        }
+        processed++;
+        if (processed % 10 === 0) {
+          await pool.query(
+            `UPDATE face_detection_state SET processed_items = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = $2 AND id = (SELECT MAX(id) FROM face_detection_state WHERE user_id = $2)`,
+            [processed, userId]
+          );
+        }
+      }
+    }
+
+    await Promise.all([producer(), consumer()]);
+
+    await pool.query(
+      `UPDATE face_detection_state SET status = 'clustering', updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1 AND id = (SELECT MAX(id) FROM face_detection_state WHERE user_id = $1)`,
+      [userId]
+    );
     await clusterFacesByPerson(distance, userId);
 
     client = await pool.connect();
     try {
       await client.query(
-        `UPDATE indexing_state SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $1 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $1)`,
+        `UPDATE face_detection_state SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $1 AND id = (SELECT MAX(id) FROM face_detection_state WHERE user_id = $1)`,
         [userId]
       );
     } finally { client.release(); }
@@ -224,8 +317,8 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
     const c = await pool.connect();
     try {
       await c.query(
-        `UPDATE indexing_state SET status = 'error', error = $1, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $2 AND id = (SELECT MAX(id) FROM indexing_state WHERE user_id = $2)`,
+        `UPDATE face_detection_state SET status = 'error', error = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $2 AND id = (SELECT MAX(id) FROM face_detection_state WHERE user_id = $2)`,
         [err.message, userId]
       );
     } finally { c.release(); }
@@ -247,4 +340,18 @@ async function getIndexingState(userId) {
   }
 }
 
-module.exports = { startIndexing, startFaceDetection, getIndexingState, fetchAllPhotosMetadata, savePhotosToDb };
+async function getFaceDetectionState(userId) {
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT * FROM face_detection_state WHERE user_id = $1 ORDER BY id DESC LIMIT 1`,
+      [userId]
+    );
+    return result.rows[0] || { status: 'idle' };
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { startIndexing, startFaceDetection, getIndexingState, getFaceDetectionState, getFaceDetectionMetrics };

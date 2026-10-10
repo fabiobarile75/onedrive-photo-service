@@ -1,214 +1,111 @@
-# OneDrive Photo Service - Architecture Overview
+# Architecture
 
-## System Design
+## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Web UI (Vite)                            │
-│  - Tab navigation (Indexing, Clusters, Gallery, Stats)          │
-│  - Real-time progress polling                                   │
-│  - Cluster visualization & management                           │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ HTTP/REST
-┌────────────────────────▼────────────────────────────────────────┐
-│                    Express.js Backend                            │
-├─────────────────────────────────────────────────────────────────┤
-│ API Routes:                                                      │
-│  ├─ /api/indexing  → Control indexing process                  │
-│  ├─ /api/photos    → Query photos & GPS search                 │
-│  └─ /api/faces     → Face clusters & management                │
-├─────────────────────────────────────────────────────────────────┤
-│ Services:                                                        │
-│  ├─ indexer.js        → Orchestrate 3-phase indexing           │
-│  ├─ faceDetector.js   → face-api + clustering                  │
-│  ├─ imageConverter.js → HEIC→JPEG + optimization               │
-│  └─ oauth.js          → Token management                        │
-├─────────────────────────────────────────────────────────────────┤
-│ Database Handlers:                                               │
-│  └─ db/init.js        → Schema + connection pool               │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ SQL
-┌────────────────────────▼────────────────────────────────────────┐
-│                    PostgreSQL 16                                 │
-├─────────────────────────────────────────────────────────────────┤
-│ Tables:                                                          │
-│  ├─ photos(id, name, taken_at, metadata JSONB)                 │
-│  ├─ photo_faces(photo_id, descriptor, bounding_box, ...)       │
-│  └─ indexing_state(status, progress, error)                    │
-├─────────────────────────────────────────────────────────────────┤
-│ Indexes:                                                         │
-│  ├─ idx_photos_taken_at                                         │
-│  ├─ idx_photo_faces_cluster_id                                  │
-│  └─ idx_photo_faces_photo_id                                    │
-└─────────────────────────────────────────────────────────────────┘
-         ▲
-         │ OneDrive API
-         │
-    ┌────┴────────────────────────┐
-    │  Microsoft Graph API        │
-    │  - OAuth2 (MSA account)     │
-    │  - Delta API (pagination)   │
-    │  - Download URLs (302 redir)│
-    └─────────────────────────────┘
+Browser (Vite SPA)
+    │ HTTPS — JWT in Authorization header
+    ▼
+Reverse Proxy (Node.js)
+  /photos → onedrive-photos:8000
+    │
+    ▼
+Express.js Backend (Node.js)
+  ├── authMiddleware (JWT verify, shared secret with auth-service)
+  ├── api/indexing.js   → start/state/metrics for indexing + face detection
+  ├── api/photos.js     → list, GPS search, view, thumbnail
+  ├── api/faces.js      → clusters, identify, merge, stats
+  └── api/auth.js       → OneDrive OAuth flow
+    │
+    ├── services/indexer.js
+    │     ├── fetchAndSavePhotosMetadata()  — OneDrive delta API pagination
+    │     └── startFaceDetection()          — producer/consumer pipeline
+    │           ├── Producer (N workers)    — download from Graph API, push to AsyncQueue
+    │           └── Consumer (1 worker)     — pop from queue, send to Python daemon
+    │
+    ├── services/faceDetector.js
+    │     ├── detectFacesInImage()   — sends image bytes to daemon via stdin/stdout
+    │     ├── extractFaceThumbnail() — crops face region
+    │     ├── saveFaceToDb()         — writes to photo_faces
+    │     └── clusterFacesByPerson() — agglomerative clustering by descriptor distance
+    │
+    └── services/detect_faces_daemon.py  (long-running Python process)
+          ├── MTCNN  (facenet-pytorch) — detect + encode faces
+          ├── HOG    (face_recognition dlib)
+          ├── CNN    (face_recognition dlib)
+          └── MediaPipe (tflite)
+    │
+    ▼
+PostgreSQL
+  ├── photos                  — OneDrive metadata per user
+  ├── photo_faces             — face bounding boxes + 512D descriptors + thumbnails
+  ├── person_clusters         — cluster names per user
+  ├── indexing_state          — photo indexing progress
+  ├── face_detection_state    — face detection progress (separate from indexing)
+  └── user_onedrive_tokens    — OAuth tokens per user
 ```
 
-## Indexing Flow (3 Phases)
+## Face Detection Pipeline
 
-### Phase 1: Fetch Metadata
 ```
-OneDrive API (delta)
-    ↓
-Paginate through all photos
-    ↓
-Extract: id, name, taken_at, location, size
-    ↓
-Save to DB (photos table)
-```
-
-### Phase 2: Process Photos & Detect Faces
-```
-For each photo:
-  1. Download from OneDrive (URL redirect)
-  2. Check format (HEIC/JPEG/PNG)
-  3. Convert HEIC → JPEG if needed
-  4. Optimize resolution (1920x1080 max)
-  5. Detect faces with face-api.js
-  6. Extract thumbnails (256x256 per face)
-  7. Save face data to DB (photo_faces table)
-  8. Update progress (processed_items++)
+photos[] (from DB, limit N, videos excluded)
+    │
+    ▼
+AsyncQueue(concurrency * 2)
+    ▲                    │
+    │ push({photo,       │ pop()
+    │  buf, downloadMs}) │
+    │                    ▼
+Producer (N parallel)   Consumer (1 serial)
+─────────────────────   ──────────────────────────────
+GET /drive/items/{id}/  convertPhotoBuffer()
+  content               detectFacesInImage() ──► Python daemon
+measure downloadMs      measure detectMs
+                        pushMetric(userId, dl, det)
+                        extractFaceThumbnail()
+                        saveFaceToDb()
+                        UPDATE face_detection_state
 ```
 
-### Phase 3: Cluster Faces by Person
-```
-1. Fetch all faces from DB
-2. For each face:
-   a. Calculate distance to existing clusters
-   b. If distance < threshold (0.5):
-      - Add to cluster
-   c. Else:
-      - Create new cluster
-3. Save cluster_id to DB
-```
+The queue bounds memory usage to `concurrency * 2` photos. The producer downloads ahead so the daemon never waits for a download.
 
-## Data Models
+## Python Daemon
 
-### photos
-- `id` (PK): OneDrive file ID
-- `name`: Filename
-- `taken_at`: EXIF date or created_at
-- `metadata` (JSONB): Full OneDrive response
-- Index on `taken_at` for sorting
+The daemon is a long-running process spawned once per face detection job:
+- Communicates via `stdin` (JSON requests) / `stdout` (JSON responses)
+- Signals `{"status": "ready"}` on stdout when models are loaded
+- Loads MTCNN + InceptionResnetV1(vggface2) at startup (weights baked into Docker image)
+- HOG/CNN/MediaPipe loaded lazily on first use
 
-### photo_faces
-- `id` (PK): Auto-increment
-- `photo_id` (FK): Reference to photos
-- `face_index`: 0, 1, 2... per photo
-- `bounding_box` (JSONB): `{x, y, width, height}`
-- `descriptor` (BYTEA): 128-float embedding
-- `age`, `gender`: Detected attributes
-- `expressions` (JSONB): Emotion probabilities
-- `thumbnail` (BYTEA): 256x256 JPEG
-- `person_cluster_id`: Cluster assignment
-- Index on `photo_id` and `person_cluster_id`
+The vggface2 weights (~90MB) are pre-downloaded during `docker build` in the `python-deps` stage and copied to the final image via `COPY --from=python-deps /root/.cache/torch /root/.cache/torch`. Without this, the daemon fails with DNS error at runtime (no internet in container).
 
-### indexing_state
-- Tracks current progress
-- One row per indexing session (latest = current)
-- Status: idle → indexing → clustering → completed/error
+## Metrics
 
-## API Response Examples
+Each processed photo records `{ ts, downloadMs, detectMs }` in an in-memory circular buffer (600 entries per user ≈ 10 min at 1 photo/s). The frontend polls `GET /api/indexing/faces/metrics` every 2s and displays:
+- Last download time (ms)
+- Last detection time (ms)
+- Photos/s chart (Chart.js, 10-minute window, 10s buckets)
 
-### Start Indexing
+Metrics are lost on server restart (in-memory only by design).
+
+## State Tables
+
+Two separate state tables avoid interference:
+
+| Table | Tracks | Reset on restart |
+|-------|--------|-----------------|
+| `indexing_state` | Photo metadata indexing | No |
+| `face_detection_state` | Face detection + clustering | Yes (stuck jobs → error) |
+
+## Multi-user Isolation
+
+All tables have `user_id TEXT NOT NULL`. Every query filters by `req.userId` extracted from the JWT. Users cannot see each other's photos, faces, or tokens.
+
+## Docker Network
+
+In production (`assistant-operation`), all services share `compose_app-net`. The proxy routes `/photos` → `onedrive-photos:8000` using the container's network alias.
+
+After `--force-recreate`, the container loses its alias on `compose_app-net` and must be reconnected:
 ```bash
-POST /api/indexing/start
-→ { "status": "started" }
+docker network connect compose_app-net compose-onedrive-photos-1 --alias onedrive-photos
 ```
-
-### Get Progress
-```bash
-GET /api/indexing/state
-→ {
-    "status": "indexing",
-    "total_items": 1500,
-    "processed_items": 350,
-    "current_page": 7
-  }
-```
-
-### List Clusters
-```bash
-GET /api/faces/clusters
-→ [
-    {
-      "person_cluster_id": "abc123",
-      "photo_count": 127,
-      "face_count": 245,
-      "avg_age": 28,
-      "gender": "male"
-    },
-    ...
-  ]
-```
-
-### Get Cluster Details
-```bash
-GET /api/faces/clusters/abc123
-→ [
-    {
-      "id": 5123,
-      "photo_id": "xyz",
-      "age": 28,
-      "gender": "male",
-      "bounding_box": {"x": 150, "y": 100, "width": 120, "height": 150},
-      "thumbnail": "base64..."
-    },
-    ...
-  ]
-```
-
-## Performance Characteristics
-
-### On ARM (Oracle Cloud)
-- **Single-threaded**: ~500ms/photo for face detection
-- **Network**: ~100ms/photo for download
-- **Database writes**: Batched, negligible
-
-| Step | 100 photos | 1000 photos | 10k photos |
-|------|-----------|-----------|-----------|
-| Fetch metadata | 30s | 2m | 20m |
-| Download+convert | 1m | 10m | 100m |
-| Detect faces | 1m | 8m | 80m |
-| Cluster | 10s | 1m | 10m |
-| **Total** | ~3m | ~21m | ~200m |
-
-### Database
-- Photos table: ~1KB per row
-- photo_faces table: ~20KB per row (descriptor + thumbnail)
-- Indexes: ~10% of data size
-
-1000 photos with ~5000 faces = ~100MB total
-
-## Scaling Considerations
-
-### To process millions of photos:
-1. **Parallelize downloads** (async fetch pool)
-2. **Batch face detection** (multi-worker processing)
-3. **Use hierarchical clustering** instead of agglomerative
-4. **Cache converted images** to avoid re-processing
-5. **Stream results** instead of loading all faces into memory
-
-### Future improvements:
-- WebSocket for real-time UI updates (instead of polling)
-- Background job queue (Bull, RabbitMQ)
-- Face re-identification across sessions
-- PostgreSQL full-text search on metadata
-- S3/cloud storage for image caching
-
-## Security Notes
-
-- OAuth tokens stored in `tokens.json` (local, not committed)
-- Auto-refresh before expiration
-- No credentials logged
-- All OneDrive access via Graph API (authorized only)
-- Face data stored locally (not sent to cloud)
-- HTTPS recommended for production deployment

@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OneDrive Photo Service</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <style>
+    #map-container { height: 600px; border-radius: 8px; overflow: hidden; }
+    .map-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px; }
+    .map-controls label { font-size: 0.85em; color: #aaa; display: block; margin-bottom: 4px; }
+    .map-controls input, .map-controls select { padding: 7px 10px; border: 1px solid #444; border-radius: 6px; background: #2a2a2a; color: #fff; font-size: 0.9em; }
+    .map-cluster-icon { position: relative; width: 56px; height: 56px; }
+    .map-cluster-icon img { width: 56px; height: 56px; border: 2px solid #fff; border-radius: 6px; object-fit: cover; box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
+    .map-cluster-count { position: absolute; top: -8px; right: -8px; background: #e74c3c; color: #fff; font-size: 11px; font-weight: bold; border-radius: 10px; padding: 1px 5px; min-width: 18px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+    .map-photo-marker { width: 52px; height: 52px; border: 2px solid #fff; border-radius: 4px; object-fit: cover; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.5); display: block; }
+    .leaflet-popup-content img { max-width: 200px; border-radius: 4px; }
+    .leaflet-popup-content p { margin: 4px 0; font-size: 0.85em; color: #333; }
+  </style>
 </head>
 <body>
   <div id="app" class="container">
@@ -25,6 +40,7 @@
       <button class="tab-btn" data-tab="face-detection">Face Detection</button>
       <button class="tab-btn" data-tab="clusters">Face Clusters</button>
       <button class="tab-btn" data-tab="gallery">Gallery</button>
+      <button class="tab-btn" data-tab="map">Map</button>
       <button class="tab-btn" data-tab="stats">Stats</button>
     </nav>
 
@@ -99,7 +115,7 @@
           <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div>
               <label style="display:block;margin-bottom:6px;font-weight:500;">Max photos</label>
-              <input type="number" id="face-limit-input" value="100" min="1" max="10000" step="10"
+              <input type="number" id="face-limit-input" value="100" min="1" max="100000" step="10"
                 style="width:100%;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#fff;">
             </div>
             <div>
@@ -122,6 +138,25 @@
           </div>
 
           <button id="face-detect-btn" class="btn btn-primary" style="margin-top:16px;">🔍 Detect Faces</button>
+
+          <!-- Metrics -->
+          <div id="face-metrics-section" style="margin-top:24px;display:none;">
+            <h3 style="margin-bottom:12px;font-size:1em;color:#ccc;">Performance</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+              <div style="background:#1a1a1a;border-radius:8px;padding:12px;text-align:center;">
+                <div style="font-size:0.75em;color:#888;margin-bottom:4px;">Last download</div>
+                <div id="metric-last-download" style="font-size:1.4em;font-weight:600;color:#4a9eff;">—</div>
+              </div>
+              <div style="background:#1a1a1a;border-radius:8px;padding:12px;text-align:center;">
+                <div style="font-size:0.75em;color:#888;margin-bottom:4px;">Last detection</div>
+                <div id="metric-last-detect" style="font-size:1.4em;font-weight:600;color:#4aff8c;">—</div>
+              </div>
+            </div>
+            <div style="background:#1a1a1a;border-radius:8px;padding:12px;">
+              <div style="font-size:0.75em;color:#888;margin-bottom:8px;">Photos/s (10 min window)</div>
+              <canvas id="metrics-chart" height="80"></canvas>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -175,6 +210,40 @@
         </div>
       </section>
 
+      <!-- Map Tab -->
+      <section id="map" class="tab-content">
+        <div class="card">
+          <h2>Photo Map</h2>
+          <div class="map-controls">
+            <div>
+              <label>Latitude</label>
+              <input type="number" id="map-lat" value="45.1" step="0.001" style="width:110px;">
+            </div>
+            <div>
+              <label>Longitude</label>
+              <input type="number" id="map-lng" value="6.07" step="0.001" style="width:110px;">
+            </div>
+            <div>
+              <label>Radius (km)</label>
+              <input type="number" id="map-radius" value="10" min="1" max="500" style="width:80px;">
+            </div>
+            <div>
+              <label>Person filter</label>
+              <select id="map-person-select" style="width:180px;">
+                <option value="">All persons</option>
+              </select>
+            </div>
+            <div>
+              <label>Clustering: <span id="map-cluster-radius-value">120</span>px</label>
+              <input type="range" id="map-cluster-radius" min="20" max="1000" value="120" step="10" style="width:120px;">
+            </div>
+            <button id="map-search-btn" class="btn btn-primary">🔍 Search</button>
+          </div>
+          <div id="map-result-count" style="font-size:0.85em;color:#aaa;margin-bottom:8px;"></div>
+          <div id="map-container"></div>
+        </div>
+      </section>
+
       <!-- Stats Tab -->
       <section id="stats" class="tab-content">
         <div class="card">
@@ -221,6 +290,9 @@
   </div>
 
   <script type="module" src="/src/main.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <!-- Photo Lightbox -->
   <div id="photo-lightbox" class="modal hidden" onclick="closeLightbox()" style="background:rgba(0,0,0,0.92);">
     <div style="position:relative;max-width:95vw;max-height:95vh;" onclick="event.stopPropagation()">

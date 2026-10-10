@@ -82,6 +82,21 @@ async function initializeDb() {
       );
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS face_detection_state (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'idle',
+        total_items INT DEFAULT 0,
+        processed_items INT DEFAULT 0,
+        error TEXT,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_photos_user_taken_at ON photos(user_id, taken_at DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_photo_faces_user_id ON photo_faces(user_id);`);

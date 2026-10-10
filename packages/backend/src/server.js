@@ -43,7 +43,7 @@ app.get('/health', (req, res) => {
 const frontendDist = process.env.FRONTEND_DIST || path.join(__dirname, '../../../web/dist');
 if (require('fs').existsSync(frontendDist)) {
   app.use(express.static(frontendDist));
-  app.get('*', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
+  app.get('*path', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
 }
 
 async function startServer() {
@@ -52,6 +52,13 @@ async function startServer() {
     console.log('Initializing database...');
     await initializeDb();
     console.log('Database initialized');
+
+    // Reset any stuck face detection jobs from previous run
+    const { getPool } = require('./db/init');
+    await getPool().query(
+      `UPDATE face_detection_state SET status = 'error', error = 'Server restarted'
+       WHERE status IN ('indexing', 'clustering')`
+    );
 
     app.listen(PORT, () => {
       console.log(`✓ Backend running on http://localhost:${PORT}`);

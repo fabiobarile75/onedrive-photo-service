@@ -1,160 +1,83 @@
-# Quick Start Guide
+# Quick Start
 
-## 1. Initial Setup (5 minutes)
+## Prerequisites
 
-### Copy OAuth tokens
+- Docker & Docker Compose
+- Access to an `auth-service` instance (JWT_SECRET shared)
+- OneDrive personal Microsoft account
+- Azure app registration (OAuth client_id + client_secret)
+
+## Deploy with assistant-operation (recommended)
+
 ```bash
-cp ../test/tokens.json ./tokens.json
+# 1. Build the image
+docker build -t local/onedrive-photo-service:dev /path/to/onedrive-photo-service
+
+# 2. Set environment variables in assistant-operation/compose/onedrive-photos.env.docker
+JWT_SECRET=...
+OAUTH_CLIENT_ID=...
+OAUTH_CLIENT_SECRET=...
+REDIRECT_URI=https://your-domain/photos/api/auth/callback
+
+# 3. Start
+docker compose -f assistant-operation/compose/docker-compose.local.yml up -d --force-recreate onedrive-photos
+
+# 4. Reconnect to proxy network (required after each recreate)
+docker network connect compose_app-net compose-onedrive-photos-1 --alias onedrive-photos
 ```
 
-If you don't have tokens from the test project, generate them:
-```bash
-cd packages/backend
-npm run login
-# Follow the browser authentication flow
-```
+## First Use
 
-### Install dependencies
-```bash
-npm install
-```
+1. Open `https://your-domain/photos`
+2. If not logged in → redirected to auth-service login
+3. Click "Connect OneDrive" → OAuth flow with Microsoft
+4. Go to **Indexing** tab → click "Index Photos" (fetches all metadata from OneDrive delta API)
+5. Go to **Face Detection** tab → configure options → click "Detect Faces"
+6. Monitor progress and real-time metrics (download ms, detect ms, photos/s chart)
+7. Go to **Face Clusters** tab → browse, rename, merge clusters
 
-## 2. Run with Docker (Recommended)
+## Face Detection Options
 
-### Start all services
-```bash
-docker-compose up -d
-```
-
-Check logs:
-```bash
-docker-compose logs -f backend
-```
-
-### Access the app
-- **Web UI**: http://localhost:5173
-- **API Docs**: See README.md for endpoint reference
-
-## 3. Run without Docker
-
-### Prerequisites
-- PostgreSQL 16+ running locally
-- Python 3.11+ (for face_recognition)
-
-### Setup PostgreSQL
-```bash
-# On macOS with Homebrew
-brew services start postgresql@16
-
-# On Linux
-sudo systemctl start postgresql
-
-# Create database
-createdb onedrive_photos
-```
-
-### Start backend
-```bash
-cd packages/backend
-npm install
-npm run dev
-```
-
-Backend runs on: http://localhost:3000
-
-### Start web UI (new terminal)
-```bash
-cd packages/web
-npm install
-npm run dev
-```
-
-Web UI runs on: http://localhost:5173
-
-## 4. Start Your First Indexing
-
-1. **Open** http://localhost:5173
-2. **Click** "Start Indexing" button
-3. **Monitor** progress in real-time:
-   - Phase 1: Fetch photos from OneDrive (~2 min for 1000 photos)
-   - Phase 2: Process each photo & detect faces (~8-10 min)
-   - Phase 3: Cluster faces by person (~5 min)
-
-## 5. View Results
-
-- **Face Clusters tab**: See people detected in your photos
-- **Gallery tab**: Browse all indexed photos
-- **Stats tab**: See total photos, faces, clusters
+| Option | Description |
+|--------|-------------|
+| Model | `mtcnn` (recommended), `hog` (fastest), `cnn`, `mediapipe` |
+| Max photos | Number of photos to process (up to 100000) |
+| Parallelism | Concurrent downloads (1–20); daemon processes sequentially |
+| Clustering distance | 0.3 (strict) → 1.5 (loose); default 1.0 |
 
 ## Troubleshooting
 
-### PostgreSQL won't start
+**502 Bad Gateway after recreate**:
+The container lost its connection to the proxy network. Run:
 ```bash
-# Check if running
-ps aux | grep postgres
-
-# Clear stuck connections (if needed)
-rm -rf /var/lib/postgresql/16/main/postmaster.pid
+docker network connect compose_app-net compose-onedrive-photos-1 --alias onedrive-photos
 ```
 
-### "No tokens found" error
-Re-run the login script:
+**Button disabled after server restart**:
+The startup reset clears stuck `face_detection_state` rows automatically. If still stuck, check DB:
 ```bash
-cd packages/backend
-npm run login
+docker exec compose-postgres-1 psql -U assistant -d onedrive_photos \
+  -c "UPDATE face_detection_state SET status='idle' WHERE status IN ('indexing','clustering');"
 ```
 
-### Face detection is very slow
-- Reduce photo resolution in `packages/backend/src/services/imageConverter.js`
-- Increase workers: `FACE_DETECTION_WORKERS=4 npm run dev`
+**Daemon DNS failure at startup**:
+The vggface2 weights must be baked into the image at build time. If you see `URLError: Temporary failure in name resolution` in logs, rebuild with `docker build` (not from cache if python-deps layer is stale).
 
-### Port already in use
-```bash
-# Find process using port 3000
-lsof -i :3000
+**"No download URL" errors**:
+Normal — the service uses `/drive/items/{id}/content` with Bearer token. The `@microsoft.graph.downloadUrl` field is unreliable for personal MSA accounts.
 
-# Find process using port 5173
-lsof -i :5173
+## Useful DB Queries
 
-# Kill it if needed
-kill -9 <PID>
-```
-
-## Next Steps
-
-- Review API endpoints in README.md
-- Explore clustering results in web UI
-- Manually merge/split person clusters as needed
-- Export clustered photos
-
-## Development Tips
-
-### Watch logs
-```bash
-docker-compose logs -f backend
-docker-compose logs -f postgres
-```
-
-### Access database
-```bash
-psql -U postgres -d onedrive_photos
-```
-
-Useful queries:
 ```sql
--- Count photos and faces
-SELECT COUNT(*) as photos FROM photos;
-SELECT COUNT(*) as faces FROM photo_faces;
-SELECT COUNT(DISTINCT person_cluster_id) as clusters FROM photo_faces WHERE person_cluster_id IS NOT NULL;
+-- Photos and faces count
+SELECT COUNT(*) FROM photos WHERE user_id = 'your-user-id';
+SELECT COUNT(*) FROM photo_faces WHERE user_id = 'your-user-id';
 
--- See photos without faces
-SELECT id, name FROM photos WHERE id NOT IN (SELECT DISTINCT photo_id FROM photo_faces);
+-- Face detection progress
+SELECT status, processed_items, total_items FROM face_detection_state
+ORDER BY id DESC LIMIT 1;
+
+-- Reset stuck state
+UPDATE face_detection_state SET status = 'idle'
+WHERE status IN ('indexing', 'clustering');
 ```
-
-### Reset everything
-```bash
-docker-compose down -v
-docker-compose up -d
-```
-
-This will wipe the database and start fresh.

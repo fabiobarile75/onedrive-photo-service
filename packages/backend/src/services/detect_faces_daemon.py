@@ -147,7 +147,6 @@ get_mtcnn()
 get_resnet()
 
 # Signal ready
-sys.stderr = open(os.devnull, 'w')
 sys.stdout.write(json.dumps({"status": "ready"}) + "\n")
 sys.stdout.flush()
 

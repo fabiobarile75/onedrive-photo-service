@@ -3,7 +3,7 @@ const AUTH_URL = import.meta.env.VITE_AUTH_URL || 'https://ai-assistant.freeddns
 
 // Auth token management
 function getAuthToken() {
-  return localStorage.getItem('auth_token');
+  return localStorage.getItem('ai_core_token');
 }
 
 function checkAuth() {
@@ -26,7 +26,7 @@ async function apiFetch(url, options = {}) {
   }
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
-    localStorage.removeItem('auth_token');
+    localStorage.removeItem('ai_core_token');
     const redirect = encodeURIComponent(window.location.href);
     window.location.href = `${AUTH_URL}?redirect=${redirect}`;
     return null;
@@ -236,6 +236,7 @@ async function startFaceDetectionJob() {
     document.getElementById('face-progress-status').textContent = 'Starting face detection...';
 
     facePollingInterval = setInterval(pollFaceDetectionState, 2000);
+    metricsPollingInterval = setInterval(pollMetrics, 2000);
   } catch (err) {
     document.getElementById('face-error-text').textContent = err.message;
     document.getElementById('face-error-section').classList.remove('hidden');
@@ -245,15 +246,15 @@ async function startFaceDetectionJob() {
 
 async function pollFaceDetectionState() {
   try {
-    const res = await apiFetch(`${API_BASE}/indexing/state`);
+    const res = await apiFetch(`${API_BASE}/indexing/faces/state`);
     const state = await res.json();
 
     if (state.status === 'completed') {
       document.getElementById('face-indexing-status').className = 'status completed';
-      document.getElementById('face-status-text').textContent = 'Detection completed!';
       document.getElementById('face-progress-status').textContent = 'Face detection completed successfully!';
       document.getElementById('face-progress-fill').style.width = '100%';
       clearInterval(facePollingInterval);
+      clearInterval(metricsPollingInterval);
       faceDetectBtn.disabled = false;
       setTimeout(() => {
         document.getElementById('face-progress-section').classList.add('hidden');
@@ -265,6 +266,7 @@ async function pollFaceDetectionState() {
       document.getElementById('face-error-text').textContent = state.error;
       document.getElementById('face-error-section').classList.remove('hidden');
       clearInterval(facePollingInterval);
+      clearInterval(metricsPollingInterval);
       faceDetectBtn.disabled = false;
     } else if (state.status === 'clustering') {
       document.getElementById('face-indexing-status').className = 'status indexing';
@@ -284,6 +286,7 @@ async function pollFaceDetectionState() {
       document.getElementById('face-progress-status').textContent = 'Detecting faces...';
       faceDetectBtn.disabled = true;
       if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 2000);
+      if (!metricsPollingInterval) metricsPollingInterval = setInterval(pollMetrics, 2000);
     }
   } catch (err) {
     console.error('Face poll error:', err);
@@ -295,10 +298,12 @@ async function startIndexing() {
     startBtn.disabled = true;
     errorSection.classList.add('hidden');
 
-    // Check auth first
-    const authRes = await apiFetch(`${API_BASE}/auth/status`);
-    if (!authRes.ok) {
-      showError('OAuth token is invalid or expired. Please refresh token first.');
+    // Check OneDrive connection
+    const authRes = await apiFetch(`${API_BASE}/auth/onedrive/status`);
+    if (!authRes) return;
+    const authData = await authRes.json();
+    if (!authData.connected) {
+      showError('OneDrive not connected. Please connect your OneDrive first.');
       startBtn.disabled = false;
       return;
     }
@@ -352,14 +357,17 @@ async function pollIndexingState() {
       progressFill.style.width = '100%';
       progressText.textContent = 'Processing clusters...';
     } else if (state.status === 'indexing') {
-      const percentage = state.total_items > 0
-        ? Math.round((state.processed_items / state.total_items) * 100)
-        : 0;
-
-      progressFill.style.width = percentage + '%';
-      progressText.textContent = `${state.processed_items} / ${state.total_items} items`;
-      progressPages.textContent = `Processed: ${state.processed_items}`;
-      progressStatus.textContent = `Page ${state.current_page}...`;
+      if (state.total_items > 0) {
+        const percentage = Math.round((state.processed_items / state.total_items) * 100);
+        progressFill.style.width = percentage + '%';
+        progressFill.closest('.progress-bar').style.display = '';
+        progressText.textContent = `${state.processed_items} / ${state.total_items} items (${percentage}%)`;
+      } else {
+        progressFill.closest('.progress-bar').style.display = 'none';
+        progressText.textContent = `${state.processed_items} items indexed`;
+      }
+      progressPages.textContent = `Page ${state.current_page}`;
+      progressStatus.textContent = 'Indexing in progress...';
     }
   } catch (err) {
     console.error('Poll error:', err);
@@ -656,7 +664,7 @@ function viewPhoto(photoId, name) {
 
   // Load image and faces in parallel
   const imgLoader = new Image();
-  const facesPromise = fetch(`${API_BASE}/faces/photo/${photoId}`).then(r => r.json()).catch(() => []);
+  const facesPromise = apiFetch(`${API_BASE}/faces/photo/${photoId}`).then(r => r ? r.json() : []).then(d => Array.isArray(d) ? d : []).catch(() => []);
 
   imgLoader.onload = async () => {
     const faces = await facesPromise;
@@ -698,7 +706,7 @@ function viewPhoto(photoId, name) {
   };
 
   imgLoader.onerror = () => { loading.textContent = 'Failed to load image'; };
-  imgLoader.src = `${API_BASE}/photos/${photoId}/view`;
+  imgLoader.src = `${API_BASE}/photos/${photoId}/view?token=${encodeURIComponent(getAuthToken())}`;
 }
 window.viewPhoto = viewPhoto;
 
@@ -717,4 +725,280 @@ window.closeLightbox = closeLightbox;
 checkOneDriveStatus();
 loadStats();
 pollIndexingState();
+
+// ── Photo Map ────────────────────────────────────────────────────────────────
+
+let mapInstance = null;
+let mapMarkers = [];
+let mapSearchTimeout = null;
+
+function getBoundsRadiusKm(map) {
+  const bounds = map.getBounds();
+  const center = bounds.getCenter();
+  const ne = bounds.getNorthEast();
+  // Haversine distance from center to corner
+  const R = 6371;
+  const dLat = (ne.lat - center.lat) * Math.PI / 180;
+  const dLng = (ne.lng - center.lng) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(center.lat * Math.PI/180) * Math.cos(ne.lat * Math.PI/180) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+async function initMap() {
+  if (mapInstance) return;
+  const L = window.L;
+  if (!L) { console.error('Leaflet not loaded'); return; }
+
+  const initLat = parseFloat(document.getElementById('map-lat').value) || 45.1;
+  const initLng = parseFloat(document.getElementById('map-lng').value) || 6.07;
+
+  mapInstance = L.map('map-container').setView([initLat, initLng], 11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+  }).addTo(mapInstance);
+
+  // Auto-reload on map move/zoom with debounce
+  mapInstance.on('moveend', () => {
+    const center = mapInstance.getCenter();
+    document.getElementById('map-lat').value = center.lat.toFixed(4);
+    document.getElementById('map-lng').value = center.lng.toFixed(4);
+    document.getElementById('map-radius').value = Math.ceil(getBoundsRadiusKm(mapInstance));
+    clearTimeout(mapSearchTimeout);
+    mapSearchTimeout = setTimeout(() => searchMapPhotos(false), 600);
+  });
+
+  // Load persons into select
+  try {
+    const res = await apiFetch(`${API_BASE}/faces/clusters`);
+    if (res) {
+      const clusters = await res.json();
+      const sel = document.getElementById('map-person-select');
+      clusters.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name || `Cluster ${c.id.substring(0, 6)}`;
+        sel.appendChild(opt);
+      });
+    }
+  } catch {}
+}
+
+async function searchMapPhotos(recenter = true) {
+  const L = window.L;
+  if (!L || !mapInstance) return;
+
+  const lat = parseFloat(document.getElementById('map-lat').value);
+  const lng = parseFloat(document.getElementById('map-lng').value);
+  const radius = parseFloat(document.getElementById('map-radius').value) || Math.ceil(getBoundsRadiusKm(mapInstance));
+  const personId = document.getElementById('map-person-select').value;
+
+  if (isNaN(lat) || isNaN(lng)) return;
+
+  // Remove existing cluster layer
+  if (window._mapClusterGroup) {
+    mapInstance.removeLayer(window._mapClusterGroup);
+    window._mapClusterGroup = null;
+  }
+  mapMarkers = [];
+
+  const countEl = document.getElementById('map-result-count');
+  countEl.textContent = 'Searching…';
+
+  const params = new URLSearchParams({ lat, lng, radius, limit: 500 });
+  if (personId) params.set('personIds', personId);
+
+  const res = await apiFetch(`${API_BASE}/photos/map?${params}`);
+  if (!res) return;
+  const data = await res.json();
+
+  countEl.textContent = `${data.count} photo(s) found within ${radius} km`;
+
+  if (recenter) mapInstance.setView([lat, lng], 11);
+
+  const clusterRadius = parseInt(document.getElementById('map-cluster-radius')?.value) || 120;
+  const clusterGroup = L.markerClusterGroup({
+    maxClusterRadius: clusterRadius,
+    iconCreateFunction(cluster) {
+      const children = cluster.getAllChildMarkers();
+      const first = children[0];
+      const thumbUrl = first?.options?.thumbUrl || '';
+      const count = cluster.getChildCount();
+      return L.divIcon({
+        className: '',
+        html: `<div class="map-cluster-icon">
+          <img src="${thumbUrl}" onerror="this.style.display='none'" />
+          <span class="map-cluster-count">${count}</span>
+        </div>`,
+        iconSize: [56, 56],
+        iconAnchor: [28, 28],
+      });
+    },
+  });
+
+  data.photos.forEach(photo => {
+    const thumbUrl = `${API_BASE}/photos/${photo.id}/thumbnail?token=${encodeURIComponent(getAuthToken())}`;
+    const icon = L.divIcon({
+      className: '',
+      html: `<img class="map-photo-marker" src="${thumbUrl}" onerror="this.style.display='none'" />`,
+      iconSize: [52, 52],
+      iconAnchor: [26, 26],
+    });
+
+    const marker = L.marker([photo.lat, photo.lng], { icon, thumbUrl })
+      .bindPopup(`
+        <img src="${thumbUrl}" style="max-width:180px;border-radius:4px;" /><br>
+        <p><strong>${photo.name}</strong></p>
+        <p>${photo.taken_at ? new Date(photo.taken_at).toLocaleDateString() : ''}</p>
+        <p>${photo.distance_km ? photo.distance_km.toFixed(1) + ' km' : ''}</p>
+        <a href="#" onclick="viewPhoto('${photo.id}');return false;">Voir la photo</a>
+      `);
+    clusterGroup.addLayer(marker);
+    mapMarkers.push(marker);
+  });
+
+  mapInstance.addLayer(clusterGroup);
+  window._mapClusterGroup = clusterGroup;
+}
+
+// Init map when tab is activated
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'map') {
+      setTimeout(async () => {
+        await initMap();
+        mapInstance.invalidateSize();
+        // Initial search on first open
+        if (mapMarkers.length === 0) searchMapPhotos(false);
+      }, 50);
+    }
+  });
+});
+
+document.getElementById('map-search-btn').addEventListener('click', async () => {
+  await initMap();
+  searchMapPhotos(true);
+});
+
+document.getElementById('map-cluster-radius').addEventListener('input', (e) => {
+  document.getElementById('map-cluster-radius-value').textContent = e.target.value;
+  if (mapInstance) searchMapPhotos(false);
+});
+
+// Person filter change triggers reload
+document.getElementById('map-person-select').addEventListener('change', () => {
+  if (mapInstance) searchMapPhotos(false);
+});
+let metricsPollingInterval;
+let metricsChart = null;
+
+function initMetricsChart() {
+  if (metricsChart) return;
+  const ctx = document.getElementById('metrics-chart').getContext('2d');
+  metricsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Download (ms)',
+          data: [],
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.1)',
+          tension: 0.3,
+          pointRadius: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Detect (ms)',
+          data: [],
+          borderColor: '#4aff8c',
+          backgroundColor: 'rgba(74,255,140,0.1)',
+          tension: 0.3,
+          pointRadius: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Photos/s',
+          data: [],
+          borderColor: '#ffb84a',
+          backgroundColor: 'rgba(255,184,74,0.1)',
+          tension: 0.3,
+          pointRadius: 2,
+          yAxisID: 'y2',
+        }
+      ]
+    },
+    options: {
+      animation: false,
+      scales: {
+        x: { ticks: { color: '#888', maxTicksLimit: 6 }, grid: { color: '#333' } },
+        y: { ticks: { color: '#888' }, grid: { color: '#333' }, title: { display: true, text: 'ms', color: '#888' } },
+        y2: { position: 'right', ticks: { color: '#ffb84a' }, grid: { drawOnChartArea: false }, title: { display: true, text: 'photo/s', color: '#ffb84a' } }
+      },
+      plugins: { legend: { labels: { color: '#ccc', boxWidth: 12 } } }
+    }
+  });
+}
+
+async function pollMetrics() {
+  try {
+    const res = await apiFetch(`${API_BASE}/indexing/faces/metrics`);
+    if (!res) return;
+    const metrics = await res.json();
+    if (!Array.isArray(metrics) || metrics.length === 0) return;
+
+    const section = document.getElementById('face-metrics-section');
+    section.style.display = 'block';
+    initMetricsChart();
+
+    const now = Date.now();
+    const window10min = metrics.filter(m => now - m.ts < 10 * 60 * 1000);
+
+    if (window10min.length === 0) return;
+
+    const last = window10min[window10min.length - 1];
+    document.getElementById('metric-last-download').textContent =
+      last.downloadMs != null ? last.downloadMs + ' ms' : '—';
+    document.getElementById('metric-last-detect').textContent =
+      last.detectMs != null ? last.detectMs + ' ms' : '—';
+
+    // Bucket into 10s slots for photos/s
+    const buckets = {};
+    window10min.forEach(m => {
+      const slot = Math.floor(m.ts / 10000) * 10000;
+      buckets[slot] = (buckets[slot] || 0) + 1;
+    });
+    const slots = Object.keys(buckets).sort();
+    const photosPerS = slots.map(s => (buckets[s] / 10).toFixed(2));
+    const labels = slots.map(s => {
+      const d = new Date(parseInt(s));
+      return d.getHours().toString().padStart(2, '0') + ':' +
+             d.getMinutes().toString().padStart(2, '0') + ':' +
+             d.getSeconds().toString().padStart(2, '0');
+    });
+
+    // Raw download/detect times (last 60 for readability)
+    const recent = window10min.slice(-60);
+    const dlLabels = recent.map(m => {
+      const d = new Date(m.ts);
+      return d.getHours().toString().padStart(2, '0') + ':' +
+             d.getMinutes().toString().padStart(2, '0') + ':' +
+             d.getSeconds().toString().padStart(2, '0');
+    });
+
+    metricsChart.data.labels = dlLabels;
+    metricsChart.data.datasets[0].data = recent.map(m => m.downloadMs);
+    metricsChart.data.datasets[1].data = recent.map(m => m.detectMs);
+    // photos/s dataset uses same labels (may differ in length — pad with null)
+    metricsChart.data.datasets[2].data = dlLabels.map((_, i) => {
+      const slot = Math.floor(recent[i].ts / 10000) * 10000;
+      return buckets[slot] ? (buckets[slot] / 10).toFixed(2) : null;
+    });
+    metricsChart.update();
+  } catch (err) {
+    console.error('Metrics poll error:', err);
+  }
+}
+
 pollFaceDetectionState();
