@@ -1,10 +1,14 @@
 const { getPool } = require('../db/init');
 
-const CLIENT_ID = process.env.OAUTH_CLIENT_ID || 'REDACTED_CLIENT_ID';
-const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || 'REDACTED_SECRET';
+const CLIENT_ID = process.env.OAUTH_CLIENT_ID;
+const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET;
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:8000/api/auth/callback';
 const SCOPES = 'offline_access Files.Read';
 const AUTHORITY = 'https://login.microsoftonline.com/consumers';
+
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  throw new Error('OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET environment variables are required');
+}
 
 function getAuthorizationUrl(state) {
   const params = new URLSearchParams({

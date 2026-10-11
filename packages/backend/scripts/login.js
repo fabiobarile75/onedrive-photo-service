@@ -4,12 +4,17 @@ const fs = require('fs');
 const path = require('path');
 const open = require('open');
 
-const CLIENT_ID = process.env.OAUTH_CLIENT_ID || 'REDACTED_CLIENT_ID';
-const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || 'REDACTED_SECRET';
+const CLIENT_ID = process.env.OAUTH_CLIENT_ID;
+const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET;
 const REDIRECT_URI = 'http://localhost:3333/callback';
 const SCOPES = 'offline_access Files.Read';
 const TOKEN_FILE = path.join(__dirname, '../tokens.json');
 const AUTHORITY = 'https://login.microsoftonline.com/consumers';
+
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  console.error('Error: OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET environment variables are required');
+  process.exit(1);
+}
 
 function saveTokens(tokens) {
   fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
