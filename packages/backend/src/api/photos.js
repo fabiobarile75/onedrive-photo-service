@@ -29,6 +29,84 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/map', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lng = parseFloat(req.query.lng);
+    const radius = parseFloat(req.query.radius) || 10; // km
+    const personIds = req.query.personIds ? req.query.personIds.split(',').filter(Boolean) : null;
+    const limit = parseInt(req.query.limit) || 500;
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ error: 'lat and lng are required' });
+    }
+
+    const pool = getPool();
+    const client = await pool.connect();
+    try {
+      // Haversine distance filter using GPS coords from metadata JSONB
+      // Graph API stores: metadata->'location' = { latitude, longitude, altitude }
+      let query, params;
+
+      if (personIds && personIds.length > 0) {
+        query = `
+          SELECT DISTINCT ON (p.id) p.id, p.name, p.taken_at,
+                 (p.metadata->'location'->>'latitude')::float  AS lat,
+                 (p.metadata->'location'->>'longitude')::float AS lng,
+                 (6371 * acos(LEAST(1.0,
+                   cos(radians($1)) * cos(radians((p.metadata->'location'->>'latitude')::float)) *
+                   cos(radians((p.metadata->'location'->>'longitude')::float) - radians($2)) +
+                   sin(radians($1)) * sin(radians((p.metadata->'location'->>'latitude')::float))
+                 ))) AS distance_km
+          FROM photos p
+          JOIN photo_faces pf ON pf.photo_id = p.id AND pf.user_id = p.user_id
+          WHERE p.user_id = $3
+            AND p.metadata->'location' IS NOT NULL
+            AND p.metadata->'location'->>'latitude' IS NOT NULL
+            AND pf.person_cluster_id = ANY($4::text[])
+            AND (6371 * acos(LEAST(1.0,
+                   cos(radians($1)) * cos(radians((p.metadata->'location'->>'latitude')::float)) *
+                   cos(radians((p.metadata->'location'->>'longitude')::float) - radians($2)) +
+                   sin(radians($1)) * sin(radians((p.metadata->'location'->>'latitude')::float))
+                 ))) <= $5
+          ORDER BY p.id, distance_km ASC
+          LIMIT $6`;
+        params = [lat, lng, req.userId, personIds, radius, limit];
+      } else {
+        query = `
+          SELECT p.id, p.name, p.taken_at,
+                 (p.metadata->'location'->>'latitude')::float  AS lat,
+                 (p.metadata->'location'->>'longitude')::float AS lng,
+                 (6371 * acos(LEAST(1.0,
+                   cos(radians($1)) * cos(radians((p.metadata->'location'->>'latitude')::float)) *
+                   cos(radians((p.metadata->'location'->>'longitude')::float) - radians($2)) +
+                   sin(radians($1)) * sin(radians((p.metadata->'location'->>'latitude')::float))
+                 ))) AS distance_km
+          FROM photos p
+          WHERE p.user_id = $3
+            AND p.metadata->'location' IS NOT NULL
+            AND p.metadata->'location'->>'latitude' IS NOT NULL
+            AND (6371 * acos(LEAST(1.0,
+                   cos(radians($1)) * cos(radians((p.metadata->'location'->>'latitude')::float)) *
+                   cos(radians((p.metadata->'location'->>'longitude')::float) - radians($2)) +
+                   sin(radians($1)) * sin(radians((p.metadata->'location'->>'latitude')::float))
+                 ))) <= $4
+          ORDER BY distance_km ASC
+          LIMIT $5`;
+        params = [lat, lng, req.userId, radius, limit];
+      }
+
+      const result = await client.query(query, params);
+      res.json({ photos: result.rows, count: result.rows.length });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 router.get('/by-cluster/:clusterId', async (req, res) => {
   try {
     const { clusterId } = req.params;
@@ -55,18 +133,33 @@ router.get('/by-cluster/:clusterId', async (req, res) => {
   }
 });
 
+router.get('/:photoId/thumbnail', async (req, res) => {
+  try {
+    const token = await getValidAccessToken(req.userId);
+    const imgRes = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/items/${req.params.photoId}/thumbnails/0/small/content`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!imgRes.ok) return res.status(404).end();
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=3600');
+    imgRes.body.pipe(res);
+  } catch (err) {
+    res.status(500).end();
+  }
+});
+
 router.get('/:photoId/view', async (req, res) => {
   try {
     const token = await getValidAccessToken(req.userId);
-    const itemRes = await fetch(
-      `https://graph.microsoft.com/v1.0/me/drive/items/${req.params.photoId}`,
+    const imgRes = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/items/${req.params.photoId}/thumbnails/0/large/content`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!itemRes.ok) return res.status(404).json({ error: 'Photo not found' });
-    const item = await itemRes.json();
-    const downloadUrl = item['@microsoft.graph.downloadUrl'];
-    if (!downloadUrl) return res.status(404).json({ error: 'No download URL' });
-    res.redirect(downloadUrl);
+    if (!imgRes.ok) return res.status(404).json({ error: 'Photo not found' });
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=3600');
+    imgRes.body.pipe(res);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

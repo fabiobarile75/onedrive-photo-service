@@ -16,6 +16,22 @@ async function optimizeImageForDetection(buffer, maxWidth = 2000, maxHeight = 20
   }
 }
 
+async function convertHeicToJpeg(buffer, maxWidth = 2048, maxHeight = 2048) {
+  return await sharp(buffer)
+    .rotate()
+    .resize(maxWidth, maxHeight, {
+      fit: 'inside',
+      withoutEnlargement: true
+    })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+}
+
+function isHeicFile(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  return ext === '.heic' || ext === '.heif';
+}
+
 async function convertPhotoBuffer(buffer, photoName) {
   const ext = path.extname(photoName).toLowerCase();
 
@@ -31,4 +47,4 @@ async function convertPhotoBuffer(buffer, photoName) {
   throw new Error(`Unsupported image format: ${ext}`);
 }
 
-module.exports = { convertPhotoBuffer, optimizeImageForDetection };
+module.exports = { convertPhotoBuffer, optimizeImageForDetection, convertHeicToJpeg, isHeicFile };

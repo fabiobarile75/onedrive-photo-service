@@ -1,7 +1,7 @@
 const fetch = require('node-fetch').default;
 const { getValidAccessToken } = require('../auth/oauth');
 const { getPool } = require('../db/init');
-const { convertPhotoBuffer } = require('./imageConverter');
+const { convertPhotoBuffer, convertHeicToJpeg, isHeicFile } = require('./imageConverter');
 const { detectFacesInImage, extractFaceThumbnail, saveFaceToDb, clusterFacesByPerson } = require('./faceDetector');
 
 // Per-user metrics buffer (last 600 events = ~10 min at 1/s)
@@ -84,25 +84,9 @@ async function indexPhotoWithFaces(photo, token, model, userId) {
     const processedBuffer = await convertPhotoBuffer(imageBuffer, photo.name);
 
     let thumbnailBuffer = processedBuffer;
-    if (ext === '.heic' || ext === '.heif') {
+    if (isHeicFile(photo.name)) {
       try {
-        const os = require('os'), fs = require('fs'), { spawn } = require('child_process');
-        const tmpHeic = require('path').join(os.tmpdir(), `heic_thumb_${Date.now()}.heic`);
-        const tmpJpeg = require('path').join(os.tmpdir(), `heic_thumb_${Date.now()}.jpg`);
-        fs.writeFileSync(tmpHeic, imageBuffer);
-        await new Promise((resolve, reject) => {
-          const proc = spawn('python3', ['-c', `
-from pillow_heif import open_heif
-from PIL import Image, ImageOps
-heif = open_heif('${tmpHeic}', convert_hdr_to_8bit=True)
-img = ImageOps.exif_transpose(Image.frombytes(heif.mode, heif.size, heif.data))
-img.save('${tmpJpeg}', 'JPEG', quality=90)
-`]);
-          proc.on('close', code => code === 0 ? resolve() : reject(new Error('HEIC→JPEG failed')));
-          proc.on('error', reject);
-        });
-        thumbnailBuffer = fs.readFileSync(tmpJpeg);
-        try { fs.unlinkSync(tmpHeic); fs.unlinkSync(tmpJpeg); } catch {}
+        thumbnailBuffer = await convertHeicToJpeg(imageBuffer);
       } catch (e) {
         console.error('HEIC thumbnail conversion error:', e.message);
       }
@@ -185,10 +169,7 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
 
     await pool.query(`DELETE FROM photo_faces WHERE user_id = $1`, [userId]);
 
-    const token = await getValidAccessToken(userId);
-
-    const result = await pool.query(
-      `SELECT id, name FROM photos WHERE user_id = $1
+    const result = await pool.query(      `SELECT id, name FROM photos WHERE user_id = $1
        AND lower(substring(name from '\\.[^.]+$')) NOT IN ('.mov', '.mp4', '.3gp', '.avi', '.mkv', '.wmv')
        LIMIT $2`,
       [userId, limit]
@@ -247,8 +228,9 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
           if (!photo) break;
           try {
             const url = `https://graph.microsoft.com/v1.0/me/drive/items/${photo.id}/content`;
+            const freshToken = await getValidAccessToken(userId);
             const dlStart = Date.now();
-            const buf = await downloadPhotoBuffer(photo.id, url, token);
+            const buf = await downloadPhotoBuffer(photo.id, url, freshToken);
             const downloadMs = Date.now() - dlStart;
             await queue.push({ photo, buf, downloadMs });
           } catch (e) {
@@ -274,8 +256,13 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
           const detectMs = Date.now() - detectStart;
           pushMetric(userId, downloadMs, detectMs);
           if (detections.length > 0) {
+            // For HEIC, convert to JPEG for sharp thumbnail extraction
+            let thumbSourceBuffer = processedBuffer;
+            if (isHeicFile(photo.name)) {
+              thumbSourceBuffer = await convertHeicToJpeg(buf);
+            }
             for (let i = 0; i < detections.length; i++) {
-              const thumbnail = await extractFaceThumbnail(processedBuffer, detections[i].box);
+              const thumbnail = await extractFaceThumbnail(thumbSourceBuffer, detections[i].box);
               await saveFaceToDb(photo.id, userId, i, detections[i], thumbnail);
             }
           }
