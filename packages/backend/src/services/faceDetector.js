@@ -14,7 +14,7 @@ let reqIdCounter = 0;
 let rl = null;
 
 function startDaemon() {
-  daemonProc = spawn('python3', [PYTHON_DAEMON]);
+  daemonProc = spawn('python3', [PYTHON_DAEMON], { stdio: ['pipe', 'pipe', 'inherit'] });
   daemonReady = false;
 
   rl = readline.createInterface({ input: daemonProc.stdout });

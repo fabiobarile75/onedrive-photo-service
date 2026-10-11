@@ -40,10 +40,9 @@ app.get('/health', (req, res) => {
 });
 
 // Serve frontend static files in production
-const frontendDist = process.env.FRONTEND_DIST || path.join(__dirname, '../../../web/dist');
+const frontendDist = process.env.FRONTEND_DIST || '/app/web/dist';
 if (require('fs').existsSync(frontendDist)) {
   app.use(express.static(frontendDist));
-  app.get('*path', (req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
 }
 
 async function startServer() {

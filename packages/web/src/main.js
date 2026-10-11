@@ -43,6 +43,13 @@ const tabBtns = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
 const startBtn = document.getElementById('start-btn');
 const faceDetectBtn = document.getElementById('face-detect-btn');
+const faceResumeBtn = document.getElementById('face-resume-btn');
+const faceStopBtn = document.getElementById('face-stop-btn');
+const confirmModal = document.getElementById('confirm-modal');
+const confirmModalTitle = document.getElementById('confirm-modal-title');
+const confirmModalMessage = document.getElementById('confirm-modal-message');
+const confirmModalBtn = document.getElementById('confirm-modal-btn');
+let confirmCallback = null;
 const statusText = document.getElementById('status-text');
 const statusDiv = document.getElementById('indexing-status');
 const progressSection = document.getElementById('progress-section');
@@ -56,6 +63,27 @@ const photosGrid = document.getElementById('photos-grid');
 const clustersContainer = document.getElementById('clusters-container');
 const clusterModal = document.getElementById('cluster-modal');
 const modalClose = document.querySelector('.modal-close');
+
+// Confirmation Modal functions
+function showConfirmModal(title, message, onConfirm, btnClass = 'btn-primary') {
+  confirmModalTitle.textContent = title;
+  confirmModalMessage.textContent = message;
+  confirmModalBtn.className = `btn ${btnClass}`;
+  confirmCallback = onConfirm;
+  confirmModal.classList.remove('hidden');
+}
+
+function closeConfirmModal() {
+  confirmModal.classList.add('hidden');
+  confirmCallback = null;
+}
+
+confirmModalBtn.addEventListener('click', () => {
+  if (confirmCallback) {
+    confirmCallback();
+  }
+  closeConfirmModal();
+});
 
 // Logout
 document.getElementById('logout-btn').addEventListener('click', () => {
@@ -203,23 +231,58 @@ tabBtns.forEach(btn => {
 });
 
 // Indexing controls
-startBtn.addEventListener('click', startIndexing);
-faceDetectBtn.addEventListener('click', startFaceDetectionJob);
+startBtn.addEventListener('click', () => {
+  showConfirmModal(
+    'Démarrer l\'indexation',
+    'Voulez-vous vraiment démarrer l\'indexation des photos ? Cela va télécharger les métadonnées de toutes vos photos depuis OneDrive.',
+    startIndexing,
+    'btn-primary'
+  );
+});
+
+faceDetectBtn.addEventListener('click', () => {
+  showConfirmModal(
+    'Détecter les visages',
+    'Voulez-vous vraiment lancer la détection de visages ? Cela va traiter les photos et peut prendre du temps. Les faces déjà détectées seront supprimées.',
+    startFaceDetectionJob,
+    'btn-primary'
+  );
+});
+
+faceResumeBtn.addEventListener('click', () => {
+  showConfirmModal(
+    'Reprendre la détection',
+    'Voulez-vous vraiment reprendre la détection de visages ? Cela va continuer le traitement des photos non traitées et en erreur, sans refaire celles déjà traitées.',
+    resumeFaceDetection,
+    'btn-warning'
+  );
+});
+
+faceStopBtn.addEventListener('click', () => {
+  showConfirmModal(
+    'Arrêter la détection',
+    'Voulez-vous vraiment arrêter la détection de visages en cours ? Le processus sera interrompu et vous pourrez le reprendre plus tard.',
+    stopFaceDetection,
+    'btn-danger'
+  );
+});
+
 modalClose?.addEventListener('click', closeClustersModal);
 
 async function startFaceDetectionJob() {
   try {
     faceDetectBtn.disabled = true;
-    document.getElementById('face-error-section').classList.add('hidden');
+  document.getElementById('face-error-section').classList.add('hidden');
+  document.getElementById('face-reprise-status').textContent = '';
 
-    const distance = parseFloat(distanceSlider.value);
+  const distance = parseFloat(distanceSlider.value);
     const detectionModel = document.getElementById('detection-model-select').value;
     const limit = parseInt(document.getElementById('face-limit-input').value) || 100;
     const concurrency = parseInt(document.getElementById('face-concurrency-input').value) || 5;
     const res = await apiFetch(`${API_BASE}/indexing/faces/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ distance, model: detectionModel, limit, concurrency })
+      body: JSON.stringify({ distance, model: detectionModel, limit, concurrency, autoRetry: true })
     });
     const data = await res.json();
 
@@ -249,6 +312,16 @@ async function pollFaceDetectionState() {
     const res = await apiFetch(`${API_BASE}/indexing/faces/state`);
     const state = await res.json();
 
+    // Afficher le nombre d'erreurs 429
+    const error429Count = state.error_429_count || 0;
+    const errorInfo = document.getElementById('face-429-info');
+    if (error429Count > 0) {
+      errorInfo.style.display = 'block';
+      document.getElementById('face-429-count').textContent = error429Count;
+    } else {
+      errorInfo.style.display = 'none';
+    }
+
     if (state.status === 'completed') {
       document.getElementById('face-indexing-status').className = 'status completed';
       document.getElementById('face-progress-status').textContent = 'Face detection completed successfully!';
@@ -256,10 +329,54 @@ async function pollFaceDetectionState() {
       clearInterval(facePollingInterval);
       clearInterval(metricsPollingInterval);
       faceDetectBtn.disabled = false;
+      faceResumeBtn.disabled = false;
+      faceStopBtn.style.display = 'none';
       setTimeout(() => {
         document.getElementById('face-progress-section').classList.add('hidden');
         loadClusters();
       }, 2000);
+    } else if (state.status === 'stopped') {
+      document.getElementById('face-indexing-status').className = 'status idle';
+      document.getElementById('face-status-text').textContent = 'Arrêté';
+      document.getElementById('face-progress-section').classList.add('hidden');
+      document.getElementById('face-reprise-status').textContent = '⏹️ Détection arrêtée par l\'utilisateur';
+      document.getElementById('face-reprise-status').style.color = '#ff6b6b';
+      clearInterval(facePollingInterval);
+      clearInterval(metricsPollingInterval);
+      faceDetectBtn.disabled = false;
+      faceResumeBtn.disabled = false;
+      faceStopBtn.style.display = 'none';
+    } else if (state.status === 'waiting_retry') {
+      // En attente de reprise automatique après erreur 429
+      document.getElementById('face-indexing-status').className = 'status indexing';
+      document.getElementById('face-status-text').textContent = 'En attente (rate limit)';
+      document.getElementById('face-progress-section').classList.remove('hidden');
+      
+      // Afficher le compte à rebours
+      const countdownContainer = document.getElementById('face-retry-countdown-container');
+      countdownContainer.style.display = 'inline';
+      
+      if (state.next_retry_at) {
+        const retryTime = new Date(state.next_retry_at).getTime();
+        const now = Date.now();
+        const secondsLeft = Math.max(0, Math.ceil((retryTime - now) / 1000));
+        document.getElementById('face-retry-countdown').textContent = secondsLeft;
+        document.getElementById('face-progress-status').textContent = `Rate limit atteint — reprise automatique dans ${secondsLeft}s...`;
+      } else {
+        document.getElementById('face-progress-status').textContent = 'Rate limit atteint — en attente de reprise...';
+      }
+      
+      // Afficher la progression actuelle
+      const pct = state.total_items > 0 ? Math.round((state.processed_items / state.total_items) * 100) : 0;
+      document.getElementById('face-progress-fill').style.width = pct + '%';
+      document.getElementById('face-progress-text').textContent = `${state.processed_items} / ${state.total_items}`;
+      
+      faceDetectBtn.disabled = true;
+      faceResumeBtn.disabled = true;
+      faceStopBtn.style.display = 'inline-block';
+      
+      // Polling plus fréquent pour le compte à rebours
+      if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 1000);
     } else if (state.status === 'error') {
       document.getElementById('face-indexing-status').className = 'status error';
       document.getElementById('face-status-text').textContent = 'Error';
@@ -268,6 +385,8 @@ async function pollFaceDetectionState() {
       clearInterval(facePollingInterval);
       clearInterval(metricsPollingInterval);
       faceDetectBtn.disabled = false;
+      faceResumeBtn.disabled = false;
+      faceStopBtn.style.display = 'none';
     } else if (state.status === 'clustering') {
       document.getElementById('face-indexing-status').className = 'status indexing';
       document.getElementById('face-status-text').textContent = 'Clustering faces...';
@@ -275,6 +394,8 @@ async function pollFaceDetectionState() {
       document.getElementById('face-progress-status').textContent = 'Clustering faces...';
       document.getElementById('face-progress-fill').style.width = '100%';
       faceDetectBtn.disabled = true;
+      faceResumeBtn.disabled = true;
+      faceStopBtn.style.display = 'inline-block';
       if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 2000);
     } else if (state.status === 'indexing') {
       const pct = state.total_items > 0 ? Math.round((state.processed_items / state.total_items) * 100) : 0;
@@ -285,11 +406,94 @@ async function pollFaceDetectionState() {
       document.getElementById('face-progress-text').textContent = `${state.processed_items} / ${state.total_items}`;
       document.getElementById('face-progress-status').textContent = 'Detecting faces...';
       faceDetectBtn.disabled = true;
+      faceResumeBtn.disabled = true;
+      faceStopBtn.style.display = 'inline-block';
+      // Masquer le compte à rebours si on est en indexing normal
+      document.getElementById('face-retry-countdown-container').style.display = 'none';
       if (!facePollingInterval) facePollingInterval = setInterval(pollFaceDetectionState, 2000);
       if (!metricsPollingInterval) metricsPollingInterval = setInterval(pollMetrics, 2000);
     }
   } catch (err) {
     console.error('Face poll error:', err);
+  }
+}
+
+async function resumeFaceDetection() {
+  try {
+    faceResumeBtn.disabled = true;
+    document.getElementById('face-reprise-status').textContent = 'Resuming face detection from where it stopped...';
+    document.getElementById('face-reprise-status').style.color = '#ffcc00';
+    
+    const res = await apiFetch(`${API_BASE}/indexing/faces/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        distance: parseFloat(distanceSlider.value),
+        model: document.getElementById('detection-model-select').value,
+        limit: parseInt(document.getElementById('face-limit-input').value) || 100,
+        concurrency: parseInt(document.getElementById('face-concurrency-input').value) || 5,
+        autoRetry: true
+      })
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      document.getElementById('face-reprise-status').textContent = `Error: ${data.error}`;
+      document.getElementById('face-reprise-status').style.color = '#ff4444';
+      faceResumeBtn.disabled = false;
+      return;
+    }
+    
+    document.getElementById('face-reprise-status').textContent = '✅ Face detection resumed successfully! Continuing from where it stopped.';
+    document.getElementById('face-reprise-status').style.color = '#4aff8c';
+    
+    // Démarrer le polling pour suivre la progression
+    document.getElementById('face-indexing-status').className = 'status indexing';
+    document.getElementById('face-status-text').textContent = 'Detecting faces...';
+    document.getElementById('face-progress-section').classList.remove('hidden');
+    document.getElementById('face-progress-status').textContent = 'Resuming face detection...';
+    
+    facePollingInterval = setInterval(pollFaceDetectionState, 2000);
+    metricsPollingInterval = setInterval(pollMetrics, 2000);
+    
+  } catch (err) {
+    document.getElementById('face-reprise-status').textContent = `Error: ${err.message}`;
+    document.getElementById('face-reprise-status').style.color = '#ff4444';
+    faceResumeBtn.disabled = false;
+  } finally {
+    setTimeout(() => {
+      faceResumeBtn.disabled = false;
+    }, 5000);
+  }
+}
+
+async function stopFaceDetection() {
+  try {
+    faceStopBtn.disabled = true;
+    document.getElementById('face-reprise-status').textContent = 'Stopping face detection...';
+    document.getElementById('face-reprise-status').style.color = '#ff6b6b';
+    
+    const res = await apiFetch(`${API_BASE}/indexing/faces/stop`, {
+      method: 'POST'
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      document.getElementById('face-reprise-status').textContent = `Error: ${data.error}`;
+      document.getElementById('face-reprise-status').style.color = '#ff4444';
+      faceStopBtn.disabled = false;
+      return;
+    }
+    
+    document.getElementById('face-reprise-status').textContent = '⏹️ Face detection stopped';
+    document.getElementById('face-reprise-status').style.color = '#ff6b6b';
+    
+  } catch (err) {
+    document.getElementById('face-reprise-status').textContent = `Error: ${err.message}`;
+    document.getElementById('face-reprise-status').style.color = '#ff4444';
+    faceStopBtn.disabled = false;
   }
 }
 
@@ -447,7 +651,7 @@ async function openClusterDetail(clusterId) {
     const clusterFacesDiv = document.getElementById('cluster-faces');
     clusterFacesDiv.innerHTML = faces.map(face => `
       <div class="face-thumbnail" title="${face.photo_name}\n${face.gender || ''}" style="position:relative;">
-        <img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">
+        ${face.thumbnail ? `<img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">` : `<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">👤</div>`}
         <div class="face-info">
           ${face.age ? `${face.age}y` : ''}
           ${face.gender ? ` ${emotionEmoji(face.gender)}` : ''}
@@ -720,6 +924,7 @@ function closeLightbox() {
   }
 }
 window.closeLightbox = closeLightbox;
+window.closeConfirmModal = closeConfirmModal;
 
 // Initial load
 checkOneDriveStatus();

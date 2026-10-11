@@ -4,7 +4,7 @@ const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
 
-const FRONTEND_URL = process.env.AUTH_FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.PHOTOS_FRONTEND_URL || process.env.AUTH_FRONTEND_URL || 'http://localhost:5173';
 
 // Initiate OneDrive OAuth — requires JWT auth
 router.get('/onedrive/connect', authMiddleware, (req, res) => {
@@ -26,11 +26,10 @@ router.get('/callback', async (req, res) => {
 
   try {
     await handleOAuthCallback(code, state);
-    // Redirect back to frontend — the JWT is already in localStorage
-    res.redirect(`/?onedrive_connected=1`);
+    res.redirect(`${FRONTEND_URL}?onedrive_connected=1`);
   } catch (err) {
     console.error('OAuth callback error:', err);
-    res.redirect(`/?onedrive_error=${encodeURIComponent(err.message)}`);
+    res.redirect(`${FRONTEND_URL}?onedrive_error=${encodeURIComponent(err.message)}`);
   }
 });
 
@@ -39,6 +38,17 @@ router.get('/onedrive/status', authMiddleware, async (req, res) => {
   try {
     const connected = await hasOneDriveTokens(req.userId);
     res.json({ connected });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Disconnect OneDrive — requires JWT auth
+router.delete('/onedrive/disconnect', authMiddleware, async (req, res) => {
+  try {
+    const pool = require('../db/init').getPool();
+    await pool.query('DELETE FROM user_onedrive_tokens WHERE user_id = $1', [req.userId]);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

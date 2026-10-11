@@ -22,7 +22,7 @@ router.get('/clusters', async (req, res) => {
           MAX(pf.gender) as gender,
           (SELECT encode(pf2.thumbnail, 'base64') FROM photo_faces pf2
            WHERE pf2.person_cluster_id = pf.person_cluster_id
-           AND pf2.user_id = pf.user_id
+           AND pf2.user_id = $1
            AND pf2.thumbnail IS NOT NULL LIMIT 1) as thumbnail
         FROM photo_faces pf
         LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id

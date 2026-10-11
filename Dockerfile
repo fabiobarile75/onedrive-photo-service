@@ -30,22 +30,23 @@ RUN pip install --no-cache-dir \
 # Pre-download facenet model weights (avoids runtime DNS failure in restricted envs)
 RUN python3 -c "from facenet_pytorch import InceptionResnetV1; InceptionResnetV1(pretrained='vggface2').eval()"
 
-# Stage 3: Final image — use python:3.11-slim as base (same GLIBC as python-deps)
+# Stage 3: Final image — use python:3.11-slim as base
 FROM python:3.11-slim
 
-# Install Node.js 20 + runtime libs
+# Install Node.js 20 + runtime libs + Python http.server
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libopenblas0 \
     libgomp1 \
     libvips \
+    python3 \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python packages from python-deps stage
 COPY --from=python-deps /usr/local/lib/python3.11 /usr/local/lib/python3.11
-COPY --from=python-deps /usr/local/bin/python3.11 /usr/local/bin/python3.11
+COPY --from=python-deps /usr/local/bin/python3.11 /usr/local/bin/python3
 COPY --from=python-deps /root/.cache/torch /root/.cache/torch
 RUN ln -sf /usr/local/bin/python3.11 /usr/local/bin/python3
 
@@ -56,7 +57,7 @@ COPY packages/backend/package.json ./
 RUN npm install --omit=dev && \
     npm rebuild sharp --update-binary || true
 
-# Copy backend source (preserve node_modules installed above)
+# Copy backend source
 COPY packages/backend/src ./src
 
 # Copy built frontend
@@ -66,6 +67,6 @@ EXPOSE 8000
 
 ENV NODE_ENV=production
 ENV PORT=8000
-ENV FRONTEND_DIST=/app/web/dist
 
+# Start Node.js backend
 CMD ["node", "src/server.js"]

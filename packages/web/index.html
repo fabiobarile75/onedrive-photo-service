@@ -96,9 +96,11 @@
             <p id="face-progress-status" class="status-message">Detecting faces...</p>
           </div>
 
-          <div id="face-error-section" class="error-section hidden">
-            <p class="error-text" id="face-error-text"></p>
-          </div>
+           <div id="face-error-section" class="error-section hidden">
+             <p class="error-text" id="face-error-text"></p>
+           </div>
+           
+           <div id="face-reprise-status" class="status-message" style="margin-top:12px;color:#ffcc00;"></div>
 
           <div style="margin-top:16px;">
             <label style="display:block;margin-bottom:8px;font-weight:500;">
@@ -137,10 +139,21 @@
             </div>
           </div>
 
-          <button id="face-detect-btn" class="btn btn-primary" style="margin-top:16px;">🔍 Detect Faces</button>
+           <div class="btn-group" style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;">
+             <button id="face-detect-btn" class="btn btn-primary">🔍 Detect Faces</button>
+             <button id="face-resume-btn" class="btn btn-warning" title="Continue face detection from where it stopped">🔄 Reprise détection</button>
+             <button id="face-stop-btn" class="btn btn-danger" style="display:none;" title="Stop face detection">⏹️ Stop</button>
+           </div>
 
-          <!-- Metrics -->
-          <div id="face-metrics-section" style="margin-top:24px;display:none;">
+           <div id="face-429-info" class="status-message" style="margin-top:12px;color:#ff6b6b;display:none;">
+             ⚠️ <span id="face-429-count">0</span> erreur(s) 429 (rate limit)
+             <span id="face-retry-countdown-container" style="display:none;"> — reprise auto dans <span id="face-retry-countdown">60</span>s</span>
+           </div>
+
+           <div id="face-reprise-status" class="status-message" style="margin-top:12px;color:#ffcc00;"></div>
+
+           <!-- Metrics -->
+           <div id="face-metrics-section" style="margin-top:24px;display:none;">
             <h3 style="margin-bottom:12px;font-size:1em;color:#ccc;">Performance</h3>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
               <div style="background:#1a1a1a;border-radius:8px;padding:12px;text-align:center;">
@@ -302,6 +315,37 @@
       <div id="lightbox-loading" style="color:#fff;padding:40px;font-size:1.2em;">Loading...</div>
     </div>
   </div>
+
+  <!-- Confirmation Modal -->
+  <div id="confirm-modal" class="modal hidden" onclick="closeConfirmModal()" style="background:rgba(0,0,0,0.7);">
+    <div class="modal-content" style="max-width:400px;" onclick="event.stopPropagation()">
+      <h2 id="confirm-modal-title" style="margin-bottom:16px;">Confirmer</h2>
+      <p id="confirm-modal-message" style="color:#ccc;margin-bottom:24px;line-height:1.5;"></p>
+      <div class="modal-actions" style="display:flex;gap:12px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeConfirmModal()">Annuler</button>
+        <button id="confirm-modal-btn" class="btn btn-primary">Confirmer</button>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .btn-danger {
+      background: linear-gradient(135deg, #e74c3c, #c0392b);
+      color: #fff;
+    }
+    .btn-danger:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+    }
+    .btn-warning {
+      background: linear-gradient(135deg, #f39c12, #e67e22);
+      color: #fff;
+    }
+    .btn-warning:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(243, 156, 18, 0.4);
+    }
+  </style>
 
 </body>
 </html>
