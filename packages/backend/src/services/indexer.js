@@ -1,7 +1,6 @@
 const fetch = require('node-fetch').default;
 const { getValidAccessToken } = require('../auth/oauth');
 const { getPool } = require('../db/init');
-const { convertPhotoBuffer, convertHeicToJpeg, isHeicFile } = require('./imageConverter');
 const { detectFacesInImage, extractFaceThumbnail, saveFaceToDb, clusterFacesByPerson } = require('./faceDetector');
 
 // Per-user metrics buffer (last 600 events = ~10 min at 1/s)
@@ -69,39 +68,6 @@ async function fetchAndSavePhotosMetadata(userId, stateId) {
   }
 
   return totalProcessed;
-}
-
-async function indexPhotoWithFaces(photo, token, model, userId) {
-  try {
-    const downloadUrl = photo['@microsoft.graph.downloadUrl'];
-    if (!downloadUrl) {
-      console.warn(`No download URL for ${photo.name}`);
-      return;
-    }
-
-    const imageBuffer = await downloadPhotoBuffer(photo.id, downloadUrl, token);
-    const ext = require('path').extname(photo.name).toLowerCase() || '.jpg';
-    const processedBuffer = await convertPhotoBuffer(imageBuffer, photo.name);
-
-    let thumbnailBuffer = processedBuffer;
-    if (isHeicFile(photo.name)) {
-      try {
-        thumbnailBuffer = await convertHeicToJpeg(imageBuffer);
-      } catch (e) {
-        console.error('HEIC thumbnail conversion error:', e.message);
-      }
-    }
-
-    const detections = await detectFacesInImage(processedBuffer, ext, model);
-    if (detections.length === 0) return;
-
-    for (let i = 0; i < detections.length; i++) {
-      const thumbnail = await extractFaceThumbnail(thumbnailBuffer, detections[i].box);
-      await saveFaceToDb(photo.id, userId, i, detections[i], thumbnail);
-    }
-  } catch (err) {
-    console.error(`Error processing ${photo.name}:`, err.message);
-  }
 }
 
 async function updateIndexingStatus(status, userId) {
@@ -227,7 +193,7 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
           const photo = photos[idx++];
           if (!photo) break;
           try {
-            const url = `https://graph.microsoft.com/v1.0/me/drive/items/${photo.id}/content`;
+            const url = `https://graph.microsoft.com/v1.0/me/drive/items/${photo.id}/thumbnails/0/large/content`;
             const freshToken = await getValidAccessToken(userId);
             const dlStart = Date.now();
             const buf = await downloadPhotoBuffer(photo.id, url, freshToken);
@@ -249,20 +215,13 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
         if (!item) break;
         const { photo, buf, downloadMs } = item;
         try {
-          const ext = require('path').extname(photo.name).toLowerCase() || '.jpg';
-          const processedBuffer = await convertPhotoBuffer(buf, photo.name);
           const detectStart = Date.now();
-          const detections = await detectFacesInImage(processedBuffer, ext, model);
+          const detections = await detectFacesInImage(buf, '.jpg', model);
           const detectMs = Date.now() - detectStart;
           pushMetric(userId, downloadMs, detectMs);
           if (detections.length > 0) {
-            // For HEIC, convert to JPEG for sharp thumbnail extraction
-            let thumbSourceBuffer = processedBuffer;
-            if (isHeicFile(photo.name)) {
-              thumbSourceBuffer = await convertHeicToJpeg(buf);
-            }
             for (let i = 0; i < detections.length; i++) {
-              const thumbnail = await extractFaceThumbnail(thumbSourceBuffer, detections[i].box);
+              const thumbnail = await extractFaceThumbnail(buf, detections[i].box);
               await saveFaceToDb(photo.id, userId, i, detections[i], thumbnail);
             }
           }
