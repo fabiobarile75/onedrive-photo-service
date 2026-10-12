@@ -116,7 +116,8 @@ router.get('/by-cluster/:clusterId', async (req, res) => {
     try {
       const result = await client.query(
         `SELECT DISTINCT p.id, p.name, p.taken_at,
-                encode(pf.thumbnail, 'base64') as face_thumbnail
+                encode(pf.thumbnail, 'base64') as face_thumbnail,
+                jsonb_build_object('location', p.metadata->'location') as metadata
          FROM photos p
          JOIN photo_faces pf ON pf.photo_id = p.id AND pf.user_id = p.user_id
          WHERE pf.person_cluster_id = $1 AND p.user_id = $2
@@ -124,7 +125,12 @@ router.get('/by-cluster/:clusterId', async (req, res) => {
          LIMIT $3`,
         [clusterId, req.userId, limit]
       );
-      res.json({ photos: result.rows });
+      const countResult = await client.query(
+        `SELECT COUNT(DISTINCT photo_id) as total FROM photo_faces
+         WHERE person_cluster_id = $1 AND user_id = $2`,
+        [clusterId, req.userId]
+      );
+      res.json({ photos: result.rows, total: parseInt(countResult.rows[0].total) });
     } finally {
       client.release();
     }
