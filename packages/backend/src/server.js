@@ -59,8 +59,9 @@ async function startServer() {
        WHERE status IN ('indexing', 'clustering')`
     );
 
-    app.listen(PORT, () => {
-      console.log(`✓ Backend running on http://localhost:${PORT}`);
+    const host = process.env.BIND_ALL === 'true' || process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+    app.listen(PORT, host, () => {
+      console.log(`✓ Backend running on http://${host}:${PORT}`);
     });
   } catch (err) {
     console.error('Failed to start server:', err);
