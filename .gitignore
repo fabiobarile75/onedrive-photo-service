@@ -4,6 +4,7 @@ tokens.json
 *.log
 .env
 .env.local
+docker-compose.local.yml
 dist/
 .vite/
 __pycache__/
