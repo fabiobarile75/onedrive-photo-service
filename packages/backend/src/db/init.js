@@ -109,6 +109,12 @@ async function initializeDb() {
     await client.query(`ALTER TABLE photo_faces ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
     await client.query(`ALTER TABLE person_clusters ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
     await client.query(`ALTER TABLE indexing_state ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';`);
+    await client.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS face_processed_at TIMESTAMP;`);
+    await client.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS face_error TEXT;`);
+    await client.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS face_retries INT DEFAULT 0;`);
+    await client.query(`ALTER TABLE face_detection_state ADD COLUMN IF NOT EXISTS error_429_count INT DEFAULT 0;`);
+    await client.query(`ALTER TABLE face_detection_state ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE face_detection_state ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP;`);
 
     console.log('Database initialized successfully');
   } finally {
