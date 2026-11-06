@@ -16,6 +16,7 @@ router.get('/clusters', async (req, res) => {
         SELECT
           pf.person_cluster_id,
           pc.name as cluster_name,
+          pc.description as cluster_description,
           COUNT(DISTINCT pf.photo_id) as photo_count,
           COUNT(*) as face_count,
           AVG(pf.age)::INT as avg_age,
@@ -27,7 +28,7 @@ router.get('/clusters', async (req, res) => {
         FROM photo_faces pf
         LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id
         WHERE pf.person_cluster_id IS NOT NULL AND pf.user_id = $1
-        GROUP BY pf.person_cluster_id, pc.name
+        GROUP BY pf.person_cluster_id, pc.name, pc.description
         ORDER BY photo_count DESC
       `, [req.userId]);
       res.json(result.rows);
@@ -42,6 +43,10 @@ router.get('/clusters/:clusterId', async (req, res) => {
     const pool = getPool();
     const client = await pool.connect();
     try {
+      const clusterResult = await client.query(
+        `SELECT id, name, description FROM person_clusters WHERE id = $1 AND user_id = $2`,
+        [req.params.clusterId, req.userId]
+      );
       const result = await client.query(`
         SELECT pf.id, pf.photo_id, pf.face_index, pf.age, pf.gender, pf.expressions,
                pf.bounding_box, encode(pf.thumbnail, 'base64') as thumbnail,
@@ -51,7 +56,10 @@ router.get('/clusters/:clusterId', async (req, res) => {
         WHERE pf.person_cluster_id = $1 AND pf.user_id = $2
         ORDER BY p.taken_at DESC NULLS LAST, pf.photo_id
       `, [req.params.clusterId, req.userId]);
-      res.json(result.rows);
+      res.json({
+        cluster: clusterResult.rows[0] || null,
+        faces: result.rows,
+      });
     } finally { client.release(); }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -217,6 +225,24 @@ router.put('/clusters/:clusterId/name', async (req, res) => {
   }
 });
 
+router.put('/clusters/:clusterId/description', async (req, res) => {
+  try {
+    const { description } = req.body;
+    const pool = getPool();
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO person_clusters (id, user_id, description, updated_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+         ON CONFLICT (id, user_id) DO UPDATE SET description = $3, updated_at = CURRENT_TIMESTAMP`,
+        [req.params.clusterId, req.userId, description ?? null]
+      );
+      res.json({ success: true });
+    } finally { client.release(); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/clusters/:clusterId/merge/:targetId', async (req, res) => {
   try {
     const pool = getPool();
@@ -316,7 +342,7 @@ print('ok')
     const client = await pool.connect();
     try {
       const dbFaces = await client.query(
-        `SELECT pf.id, pf.descriptor, pf.person_cluster_id, pc.name as cluster_name
+        `SELECT pf.id, pf.descriptor, pf.person_cluster_id, pc.name as cluster_name, pc.description as cluster_description
          FROM photo_faces pf
          LEFT JOIN person_clusters pc ON pc.id = pf.person_cluster_id AND pc.user_id = pf.user_id
          WHERE pf.descriptor IS NOT NULL AND pf.person_cluster_id IS NOT NULL AND pf.user_id = $1`,
@@ -326,15 +352,16 @@ print('ok')
       const threshold = parseFloat(req.body?.threshold) || 1.0;
       const results = detectedFaces.map(face => {
         const detDesc = Buffer.from(new Float32Array(face.descriptor).buffer);
-        let minDist = Infinity, bestClusterId = null, bestClusterName = null;
+        let minDist = Infinity, bestClusterId = null, bestClusterName = null, bestClusterDescription = null;
         for (const row of dbFaces.rows) {
           const dist = faceDistance(detDesc, row.descriptor);
-          if (dist < minDist) { minDist = dist; bestClusterId = row.person_cluster_id; bestClusterName = row.cluster_name; }
+          if (dist < minDist) { minDist = dist; bestClusterId = row.person_cluster_id; bestClusterName = row.cluster_name; bestClusterDescription = row.cluster_description; }
         }
         return {
           box: face.box,
           clusterId: minDist < threshold ? bestClusterId : null,
           clusterName: minDist < threshold ? (bestClusterName || bestClusterId?.substring(0, 6)) : null,
+          clusterDescription: minDist < threshold ? bestClusterDescription : null,
           distance: Math.round(minDist * 1000) / 1000
         };
       });

@@ -293,7 +293,7 @@ async function processPhotos(userId, photos, distance, model, concurrency, initi
                   );
                   const photos = result.rows.map(r => ({ id: r.id, name: r.name }));
                   
-                  if (photos.length > 0) {
+                  if (photos.length > 0 && !activeProcesses.has(userId)) {
                     await pool.query(
                       `INSERT INTO face_detection_state (user_id, status, started_at, processed_items, created_at, updated_at)
                        VALUES ($1, 'indexing', CURRENT_TIMESTAMP, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
@@ -381,6 +381,10 @@ async function processPhotos(userId, photos, distance, model, concurrency, initi
 }
 
 async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit = 100, concurrency = 5, autoRetry = false) {
+  if (activeProcesses.has(userId)) {
+    console.warn(`Face detection already running for user ${userId}, ignoring start request`);
+    return { success: false, reason: 'already_running' };
+  }
   const pool = getPool();
   let client = await pool.connect();
 
@@ -424,6 +428,10 @@ async function startFaceDetection(userId, distance = 1.0, model = 'hog', limit =
 }
 
 async function resumeFaceDetection(userId, distance = 1.0, model = 'hog', limit = 100, concurrency = 5, autoRetry = false) {
+  if (activeProcesses.has(userId)) {
+    console.warn(`Face detection already running for user ${userId}, ignoring resume request`);
+    return { success: false, reason: 'already_running' };
+  }
   const pool = getPool();
   let client = await pool.connect();
 
@@ -529,4 +537,4 @@ async function getFaceDetectionState(userId) {
   }
 }
 
-module.exports = { startIndexing, startFaceDetection, resumeFaceDetection, getIndexingState, getFaceDetectionState, getFaceDetectionMetrics };
+module.exports = { startIndexing, startFaceDetection, resumeFaceDetection, stopFaceDetection, getIndexingState, getFaceDetectionState, getFaceDetectionMetrics };

@@ -363,7 +363,8 @@ main {
   background: white;
   border-radius: 12px;
   padding: 30px;
-  max-width: 900px;
+  width: 95vw !important;
+  max-width: 1200px !important;
   max-height: 90vh;
   overflow-y: auto;
   position: relative;

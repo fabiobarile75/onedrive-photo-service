@@ -1,5 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '/api';
-const AUTH_URL = import.meta.env.VITE_AUTH_URL || 'https://ai-assistant.freeddns.org/auth';
+import '../style.css';
+const API_BASE = window.location.origin + '/photos/api';
+const AUTH_URL = window.location.origin + '/auth';
 
 // Auth token management
 function getAuthToken() {
@@ -620,6 +621,7 @@ async function loadClusters() {
         </div>
         <div class="cluster-info">
           <h3>${cluster.cluster_name || 'Person ' + cluster.person_cluster_id.substring(0, 6)}</h3>
+          ${cluster.cluster_description ? `<p style="font-size:0.8em;color:#555;margin:2px 0 4px;font-style:italic;">${cluster.cluster_description}</p>` : ''}
           <div class="cluster-stats">
             <span>${cluster.photo_count} photos</span>
             <span>${cluster.face_count} faces</span>
@@ -642,11 +644,25 @@ function emotionEmoji(emotion) {
 async function openClusterDetail(clusterId) {
   try {
     const res = await apiFetch(`${API_BASE}/faces/clusters/${clusterId}`);
-    const faces = await res.json();
+    const data = await res.json();
+    const cluster = data.cluster || {};
+    const faces = data.faces || [];
 
+    const displayName = cluster.name || clusterId.substring(0, 6);
     document.querySelector('#cluster-modal h2').innerHTML =
-      `Cluster <span id="cluster-name-display">${clusterId.substring(0, 6)}</span>
+      `Cluster <span id="cluster-name-display">${displayName}</span>
        <button onclick="renameCluster('${clusterId}')" style="font-size:0.6em;margin-left:8px;" class="btn btn-sm btn-secondary">✏️ Rename</button>`;
+
+    const descHtml = cluster.description
+      ? `<p id="cluster-description-display" style="font-size:0.9em;color:#555;font-style:italic;margin:4px 0 8px;">${cluster.description}</p>`
+      : `<p id="cluster-description-display" style="font-size:0.9em;color:#999;margin:4px 0 8px;">Aucune description</p>`;
+    const existingDesc = document.getElementById('cluster-description-area');
+    if (existingDesc) existingDesc.remove();
+    const descArea = document.createElement('div');
+    descArea.id = 'cluster-description-area';
+    descArea.innerHTML = descHtml +
+      `<button onclick="editClusterDescription('${clusterId}')" style="font-size:0.75em;" class="btn btn-sm btn-secondary">📝 Modifier la description</button>`;
+    document.querySelector('#cluster-modal h2').after(descArea);
 
     const clusterFacesDiv = document.getElementById('cluster-faces');
     clusterFacesDiv.innerHTML = faces.map(face => `
@@ -689,6 +705,25 @@ async function renameCluster(clusterId) {
   loadClusters();
 }
 window.renameCluster = renameCluster;
+
+async function editClusterDescription(clusterId) {
+  const current = document.getElementById('cluster-description-display')?.textContent;
+  const description = prompt('Description de la personne (ex: Mon frère, surnom Toto) :', current === 'Aucune description' ? '' : current || '');
+  if (description === null) return;
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/description`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: description.trim() || null })
+  });
+  const el = document.getElementById('cluster-description-display');
+  if (el) {
+    el.textContent = description.trim() || 'Aucune description';
+    el.style.color = description.trim() ? '#555' : '#999';
+    el.style.fontStyle = description.trim() ? 'italic' : 'normal';
+  }
+  loadClusters();
+}
+window.editClusterDescription = editClusterDescription;
 
 async function removeFaceFromCluster(clusterId, faceId) {
   if (!confirm('Remove this face from the cluster?')) return;

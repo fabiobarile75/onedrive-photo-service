@@ -18,9 +18,5 @@
     "open": "^11.0.4",
     "pg": "^8.11.3",
     "sharp": "^0.33.0"
-  },
-  "optionalDependencies": {
-    "@vladmandic/face-api": "^1.7.13",
-    "canvas": "^2.11.2"
   }
 }

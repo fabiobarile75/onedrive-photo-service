@@ -9,11 +9,14 @@ const PYTHON_DAEMON = path.join(__dirname, 'detect_faces_daemon.py');
 
 let daemonProc = null;
 let daemonReady = false;
+let daemonStarting = false;
 let pendingRequests = new Map(); // reqId -> { resolve, reject, buffer }
 let reqIdCounter = 0;
 let rl = null;
 
 function startDaemon() {
+  if (daemonStarting || daemonProc) return;
+  daemonStarting = true;
   daemonProc = spawn('python3', [PYTHON_DAEMON], { stdio: ['pipe', 'pipe', 'inherit'] });
   daemonReady = false;
 
@@ -26,6 +29,7 @@ function startDaemon() {
       const msg = JSON.parse(line);
       if (msg.status === 'ready') {
         daemonReady = true;
+        daemonStarting = false;
         for (const [id, req] of pendingRequests) {
           if (!req.sent) sendRequest(id, req);
         }
@@ -53,12 +57,15 @@ function startDaemon() {
     console.error('Daemon error:', err.message);
     daemonProc = null;
     daemonReady = false;
+    daemonStarting = false;
   });
 
   daemonProc.on('close', (code) => {
     console.log('Daemon exited with code', code, '— restarting...');
+    if (rl) { rl.close(); rl = null; }
     daemonProc = null;
     daemonReady = false;
+    daemonStarting = false;
     // Reject all pending
     for (const [id, req] of pendingRequests) {
       try { fs.unlinkSync(req.tmpFile); } catch {}
@@ -76,7 +83,7 @@ function sendRequest(id, req) {
 }
 
 function ensureDaemon() {
-  if (!daemonProc) startDaemon();
+  if (!daemonProc && !daemonStarting) startDaemon();
 }
 
 async function detectFacesInImage(imageBuffer, ext = '.jpg', model = 'hog') {
