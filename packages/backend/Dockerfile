@@ -1,16 +1,7 @@
-FROM node:20-slim
+FROM fabioparis75/onedrive-python-deps:latest
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    python3 \
-    python3-pip \
-    && pip3 install --break-system-packages --upgrade pip \
-    && pip3 install --break-system-packages \
-        "torch==2.6.0+cpu" \
-        "torchvision==0.21.0" \
-        --index-url https://download.pytorch.org/whl/cpu \
-    && pip3 install --break-system-packages Pillow numpy facenet-pytorch pillow-heif \
-    && rm -rf /var/lib/apt/lists/*
+# Fix numpy/Pillow version conflicts introduced by mediapipe/opencv pulling numpy>=2
+RUN pip3 install --break-system-packages "numpy<2" "Pillow>=10.2.0,<10.3.0"
 
 WORKDIR /app
 

@@ -67,6 +67,19 @@ async function initializeDb() {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS persons (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        name TEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id, user_id)
+      );
+    `);
+    await client.query(`ALTER TABLE persons ADD COLUMN IF NOT EXISTS description TEXT`);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS indexing_state (
         id SERIAL PRIMARY KEY,
         user_id TEXT NOT NULL DEFAULT '',
@@ -116,6 +129,8 @@ async function initializeDb() {
     await client.query(`ALTER TABLE face_detection_state ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN DEFAULT FALSE;`);
     await client.query(`ALTER TABLE face_detection_state ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP;`);
     await client.query(`ALTER TABLE person_clusters ADD COLUMN IF NOT EXISTS description TEXT;`);
+    await client.query(`ALTER TABLE person_clusters ADD COLUMN IF NOT EXISTS person_id TEXT;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_person_clusters_person_id ON person_clusters(person_id);`);
 
     console.log('Database initialized successfully');
   } finally {

@@ -603,43 +603,297 @@ function showError(message) {
 
 async function loadClusters() {
   try {
-    const res = await apiFetch(`${API_BASE}/faces/clusters`);
-    const clusters = await res.json();
+    const [personsRes, clustersRes, unclassifiedRes] = await Promise.all([
+      apiFetch(`${API_BASE}/faces/persons`),
+      apiFetch(`${API_BASE}/faces/clusters`),
+      apiFetch(`${API_BASE}/faces/unclassified/all?limit=1`),
+    ]);
+    const persons = await personsRes.json();
+    const clusters = await clustersRes.json();
+    const unclassifiedData = await unclassifiedRes.json();
 
-    if (clusters.length === 0) {
-      clustersContainer.innerHTML = '<p class="empty">No clusters yet. Start indexing first.</p>';
-      return;
+    // Clusters already linked to a person
+    const linkedClusterIds = new Set(
+      persons.flatMap ? [] : []
+    );
+    // Fetch person clusters ids to exclude from standalone list
+    const personClusterIds = new Set();
+    for (const p of persons) {
+      // We'll rely on person_id field from clusters
+    }
+    const standaloneClusters = clusters
+      .filter(c => !c.person_id)
+      .sort((a, b) => {
+        const aName = a.cluster_name ? 1 : 0;
+        const bName = b.cluster_name ? 1 : 0;
+        if (bName !== aName) return bName - aName;
+        return (b.face_count || 0) - (a.face_count || 0);
+      });
+
+    const sortedPersons = [...persons].sort((a, b) => {
+      const aName = a.person_name ? 1 : 0;
+      const bName = b.person_name ? 1 : 0;
+      if (bName !== aName) return bName - aName;
+      return (b.face_count || 0) - (a.face_count || 0);
+    });
+
+    let html = '';
+
+    // Persons
+    for (const person of sortedPersons) {
+      html += `
+        <div class="cluster-card" onclick="openPersonDetail('${person.person_id}')">
+          <div class="cluster-preview">
+            ${person.thumbnail
+              ? `<img src="data:image/jpeg;base64,${person.thumbnail}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;">`
+              : `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);border-radius:8px;width:100%;height:100%;"></div>`
+            }
+          </div>
+          <div class="cluster-info">
+            <h3>${person.person_name || 'Person ' + person.person_id.substring(0, 6)}</h3>
+            <div class="cluster-stats">
+              <span>${person.cluster_count} clusters</span>
+              <span>${person.face_count} faces</span>
+            </div>
+          </div>
+        </div>`;
     }
 
-    clustersContainer.innerHTML = clusters.map(cluster => `
-      <div class="cluster-card" onclick="openClusterDetail('${cluster.person_cluster_id}')">
-        <div class="cluster-preview">
-          ${cluster.thumbnail
-            ? `<img src="data:image/jpeg;base64,${cluster.thumbnail}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;">`
-            : `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);border-radius:8px;width:100%;height:100%;"></div>`
-          }
-        </div>
-        <div class="cluster-info">
-          <h3>${cluster.cluster_name || 'Person ' + cluster.person_cluster_id.substring(0, 6)}</h3>
-          ${cluster.cluster_description ? `<p style="font-size:0.8em;color:#555;margin:2px 0 4px;font-style:italic;">${cluster.cluster_description}</p>` : ''}
-          <div class="cluster-stats">
-            <span>${cluster.photo_count} photos</span>
-            <span>${cluster.face_count} faces</span>
+    // Standalone clusters (not linked to a person)
+    for (const cluster of standaloneClusters) {
+      html += `
+        <div class="cluster-card" onclick="openClusterDetail('${cluster.person_cluster_id}')">
+          <div class="cluster-preview">
+            ${cluster.thumbnail
+              ? `<img src="data:image/jpeg;base64,${cluster.thumbnail}" style="width:100%;height:100%;object-fit:cover;border-radius:8px;">`
+              : `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);border-radius:8px;width:100%;height:100%;"></div>`
+            }
           </div>
-          ${cluster.avg_age ? `<p style="margin-top: 8px; font-size: 0.85em; color: #999;">~${cluster.avg_age} years old</p>` : ''}
-        </div>
-      </div>
-    `).join('');
+          <div class="cluster-info">
+            <h3>${cluster.cluster_name || 'Person ' + cluster.person_cluster_id.substring(0, 6)}</h3>
+            ${cluster.cluster_description ? `<p style="font-size:0.8em;color:#555;margin:2px 0 4px;font-style:italic;">${cluster.cluster_description}</p>` : ''}
+            <div class="cluster-stats">
+              <span>${cluster.photo_count} photos</span>
+              <span>${cluster.face_count} faces</span>
+            </div>
+            ${cluster.avg_age ? `<p style="margin-top: 8px; font-size: 0.85em; color: #999;">~${cluster.avg_age} years old</p>` : ''}
+          </div>
+        </div>`;
+    }
+
+    if (html === '') {
+      clustersContainer.innerHTML = '<p class="empty">No clusters yet. Start indexing first.</p>';
+    } else {
+      clustersContainer.innerHTML = html;
+    }
+
+    // Unclassified section
+    const existingUnclassified = document.getElementById('unclassified-section');
+    if (existingUnclassified) existingUnclassified.remove();
+
+    if (unclassifiedData.total > 0) {
+      const section = document.createElement('div');
+      section.id = 'unclassified-section';
+      section.style.cssText = 'margin-top:24px;';
+      section.innerHTML = `
+        <h3 style="color:#999;font-size:1em;margin-bottom:12px;">Non identifiés (${unclassifiedData.total})</h3>
+        <div id="unclassified-faces-grid" class="clusters-grid" style="opacity:0.7;"></div>
+        <div id="unclassified-load-more" style="text-align:center;margin-top:8px;"></div>`;
+      clustersContainer.after(section);
+      loadUnclassifiedFaces(0);
+    }
   } catch (err) {
     console.error('Error loading clusters:', err);
     clustersContainer.innerHTML = '<p class="empty">Error loading clusters</p>';
   }
 }
 
+async function loadUnclassifiedFaces(offset = 0) {
+  const res = await apiFetch(`${API_BASE}/faces/unclassified/all?limit=50&offset=${offset}`);
+  const data = await res.json();
+  const grid = document.getElementById('unclassified-faces-grid');
+  const loadMore = document.getElementById('unclassified-load-more');
+  if (!grid) return;
+
+  const facesHtml = data.faces.map(face => `
+    <div class="face-thumbnail" title="${face.photo_name || ''}" style="position:relative;">
+      ${face.thumbnail ? `<img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">` : `<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">👤</div>`}
+      <div style="position:absolute;top:2px;right:2px;">
+        <button onclick="assignUnclassifiedFace(${face.id})" title="Assign to cluster"
+          style="background:rgba(52,152,219,0.85);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:20px;padding:0;">+</button>
+      </div>
+    </div>
+  `).join('');
+
+  if (offset === 0) {
+    grid.innerHTML = facesHtml;
+  } else {
+    grid.insertAdjacentHTML('beforeend', facesHtml);
+  }
+
+  if (loadMore) {
+    const nextOffset = offset + data.faces.length;
+    if (nextOffset < data.total) {
+      loadMore.innerHTML = `<button class="btn btn-secondary" onclick="loadUnclassifiedFaces(${nextOffset})">Charger plus (${data.total - nextOffset} restants)</button>`;
+    } else {
+      loadMore.innerHTML = '';
+    }
+  }
+}
+window.loadUnclassifiedFaces = loadUnclassifiedFaces;
+
+async function assignUnclassifiedFace(faceId) {
+  const res = await apiFetch(`${API_BASE}/faces/clusters`);
+  const clusters = await res.json();
+  const named = clusters.filter(c => c.cluster_name);
+  if (named.length === 0) { alert('No named clusters available.'); return; }
+  showMergeModalForFace(faceId, named);
+}
+window.assignUnclassifiedFace = assignUnclassifiedFace;
+
 function emotionEmoji(emotion) {
   const map = { happy: '😊', sad: '😢', angry: '😠', fear: '😨', surprise: '😲', disgust: '🤢', neutral: '😐' };
   return map[emotion] || emotion || '';
 }
+
+async function openPersonDetail(personId) {
+  try {
+    const res = await apiFetch(`${API_BASE}/faces/persons/${personId}`);
+    const data = await res.json();
+    const person = data.person || {};
+    const clusters = data.clusters || [];
+
+    document.querySelector('#cluster-modal h2').innerHTML =
+      `<span id="cluster-name-display">${person.name || 'Person ' + personId.substring(0, 6)}</span>
+       <button onclick="renamePersonModal('${personId}')" style="font-size:0.6em;margin-left:8px;" class="btn btn-sm btn-secondary">✏️ Renommer</button>`;
+
+    const existingDesc = document.getElementById('cluster-description-area');
+    if (existingDesc) existingDesc.remove();
+
+    const descArea = document.createElement('div');
+    descArea.id = 'cluster-description-area';
+    descArea.style.cssText = 'margin:4px 0 10px;';
+    descArea.innerHTML = `
+      <span id="person-description-display" style="font-size:0.9em;color:#555;font-style:italic;">
+        ${person.description || '<span style="color:#999">Aucune description</span>'}
+      </span>
+      <button onclick="editPersonDescription('${personId}')" style="font-size:0.75em;margin-left:8px;" class="btn btn-sm btn-secondary">📝 Modifier</button>
+    `;
+    document.querySelector('#cluster-modal h2').after(descArea);
+
+    const clusterFacesDiv = document.getElementById('cluster-faces');
+    clusterFacesDiv.style.cssText = 'display:flex;flex-direction:column;gap:0;width:100%;';
+    clusterFacesDiv.innerHTML = clusters.map((cluster, idx) => `
+      <div class="cluster-section" style="margin-bottom:8px;border:1px solid #333;border-radius:8px;overflow:hidden;">
+        <div class="cluster-section-header"
+          style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e1e1e;cursor:pointer;user-select:none;"
+          onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.cluster-chevron').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'">
+          <span class="cluster-chevron" style="font-size:0.75em;color:#666;width:12px;">▶</span>
+          <span
+            contenteditable="true"
+            style="font-weight:600;font-size:0.95em;color:#ccc;outline:none;cursor:text;min-width:60px;flex:1;"
+            onblur="renameClusterInline('${cluster.cluster_id}', this)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+            onclick="event.stopPropagation()"
+          >${cluster.cluster_name || cluster.cluster_id.substring(0, 6)}</span>
+          <span style="font-size:0.8em;color:#666;">${cluster.faces.length} faces</span>
+        </div>
+        <div style="display:none;padding:12px;">
+          <div class="faces-grid">
+            ${cluster.faces.map(face => `
+              <div class="face-thumbnail" title="${face.photo_name}\n${face.gender || ''}" style="position:relative;">
+                ${face.thumbnail ? `<img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">` : `<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">👤</div>`}
+                <div class="face-info">${face.age ? `${face.age}y` : ''}${face.gender ? ` ${emotionEmoji(face.gender)}` : ''}</div>
+                <div style="position:absolute;top:2px;right:2px;display:flex;gap:2px;">
+                  <button onclick="moveFaceToCluster('${cluster.cluster_id}', ${face.id})" title="Move to another cluster"
+                    style="background:rgba(52,152,219,0.85);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:20px;padding:0;">↗</button>
+                  <button onclick="removeFaceFromClusterAndRefreshPerson('${cluster.cluster_id}', ${face.id}, '${personId}')" title="Remove from cluster"
+                    style="background:rgba(0,0,0,0.6);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:20px;padding:0;">✕</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    document.querySelector('.modal-actions').innerHTML = `
+      <button class="btn btn-secondary" onclick="showMergeDialogForPerson('${personId}')">🔗 Merge cluster...</button>
+      <button class="btn btn-secondary" onclick="closeClustersModal()">Close</button>
+    `;
+
+    clusterModal.classList.remove('hidden');
+  } catch (err) {
+    console.error('Error loading person detail:', err);
+  }
+}
+window.openPersonDetail = openPersonDetail;
+
+async function renamePersonModal(personId) {
+  const name = prompt('Nom de la personne :');
+  if (!name) return;
+  await apiFetch(`${API_BASE}/faces/persons/${personId}/name`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  document.getElementById('cluster-name-display').textContent = name;
+  loadClusters();
+}
+window.renamePersonModal = renamePersonModal;
+
+async function editPersonDescription(personId) {
+  const current = document.getElementById('person-description-display')?.innerText?.trim();
+  const description = prompt('Description (ex: Mon frère, alias Toto) :', current || '');
+  if (description === null) return;
+  await apiFetch(`${API_BASE}/faces/persons/${personId}/description`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: description.trim() || null })
+  });
+  const el = document.getElementById('person-description-display');
+  if (el) el.innerHTML = description.trim() || '<span style="color:#999">Aucune description</span>';
+  loadClusters();
+}
+window.editPersonDescription = editPersonDescription;
+
+async function renameClusterInline(clusterId, el) {
+  const name = el.innerText.trim();
+  if (!name) return;
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/name`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+}
+window.renameClusterInline = renameClusterInline;
+
+async function removeFaceFromClusterAndRefreshPerson(clusterId, faceId, personId) {
+  if (!confirm('Remove this face from the cluster?')) return;
+  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/faces/${faceId}`, { method: 'DELETE' });
+  openPersonDetail(personId);
+  loadClusters();
+}
+window.removeFaceFromClusterAndRefreshPerson = removeFaceFromClusterAndRefreshPerson;
+
+async function showMergeDialogForPerson(personId) {
+  const res = await apiFetch(`${API_BASE}/faces/clusters`);
+  const clusters = await res.json();
+  // Only show named clusters not already linked to this person
+  const named = clusters.filter(c => c.cluster_name && c.person_id !== personId);
+  if (named.length === 0) { alert('No named clusters available to merge.'); return; }
+  showMergeModalList(named, async (targetClusterId) => {
+    // We need a source cluster — pick first cluster of this person
+    const personRes = await apiFetch(`${API_BASE}/faces/persons/${personId}`);
+    const personData = await personRes.json();
+    const sourceClusterId = personData.clusters[0]?.cluster_id;
+    if (!sourceClusterId) return;
+    await apiFetch(`${API_BASE}/faces/clusters/${sourceClusterId}/merge/${targetClusterId}`, { method: 'POST' });
+    closeClustersModal();
+    loadClusters();
+  });
+}
+window.showMergeDialogForPerson = showMergeDialogForPerson;
 
 async function openClusterDetail(clusterId) {
   try {
@@ -665,21 +919,37 @@ async function openClusterDetail(clusterId) {
     document.querySelector('#cluster-modal h2').after(descArea);
 
     const clusterFacesDiv = document.getElementById('cluster-faces');
-    clusterFacesDiv.innerHTML = faces.map(face => `
-      <div class="face-thumbnail" title="${face.photo_name}\n${face.gender || ''}" style="position:relative;">
-        ${face.thumbnail ? `<img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">` : `<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">👤</div>`}
-        <div class="face-info">
-          ${face.age ? `${face.age}y` : ''}
-          ${face.gender ? ` ${emotionEmoji(face.gender)}` : ''}
+    clusterFacesDiv.style.cssText = 'display:flex;flex-direction:column;gap:0;width:100%;';
+    clusterFacesDiv.innerHTML = `
+      <div class="cluster-section" style="margin-bottom:8px;border:1px solid #333;border-radius:8px;overflow:hidden;">
+        <div class="cluster-section-header"
+          style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e1e1e;cursor:pointer;user-select:none;"
+          onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.cluster-chevron').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'">
+          <span class="cluster-chevron" style="font-size:0.75em;color:#666;width:12px;">▼</span>
+          <span style="font-weight:600;font-size:0.95em;color:#ccc;flex:1;">${displayName}</span>
+          <span style="font-size:0.8em;color:#666;">${faces.length} faces</span>
         </div>
-        <div style="position:absolute;top:2px;right:2px;display:flex;gap:2px;">
-          <button onclick="moveFaceToCluster('${clusterId}', ${face.id})" title="Move to another cluster"
-            style="background:rgba(52,152,219,0.85);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:20px;padding:0;">↗</button>
-          <button onclick="removeFaceFromCluster('${clusterId}', ${face.id})" title="Remove from cluster"
-            style="background:rgba(0,0,0,0.6);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:20px;padding:0;">✕</button>
+        <div style="display:block;padding:12px;">
+          <div class="faces-grid">
+            ${faces.map(face => `
+              <div class="face-thumbnail" title="${face.photo_name}\n${face.gender || ''}" style="position:relative;">
+                ${face.thumbnail ? `<img src="data:image/jpeg;base64,${face.thumbnail}" alt="Face">` : `<div style="width:100%;height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">👤</div>`}
+                <div class="face-info">
+                  ${face.age ? `${face.age}y` : ''}
+                  ${face.gender ? ` ${emotionEmoji(face.gender)}` : ''}
+                </div>
+                <div style="position:absolute;top:2px;right:2px;display:flex;gap:2px;">
+                  <button onclick="moveFaceToCluster('${clusterId}', ${face.id})" title="Move to another cluster"
+                    style="background:rgba(52,152,219,0.85);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:20px;padding:0;">↗</button>
+                  <button onclick="removeFaceFromCluster('${clusterId}', ${face.id})" title="Remove from cluster"
+                    style="background:rgba(0,0,0,0.6);color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:20px;padding:0;">✕</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
         </div>
       </div>
-    `).join('');
+    `;
 
     document.querySelector('.modal-actions').innerHTML = `
       <button class="btn btn-secondary" onclick="showMergeDialog('${clusterId}')">🔗 Merge with...</button>
@@ -707,7 +977,9 @@ async function renameCluster(clusterId) {
 window.renameCluster = renameCluster;
 
 async function editClusterDescription(clusterId) {
-  const current = document.getElementById('cluster-description-display')?.textContent;
+  const inlineEl = document.getElementById(`cluster-desc-${clusterId}`);
+  const legacyEl = document.getElementById('cluster-description-display');
+  const current = inlineEl?.textContent || legacyEl?.textContent;
   const description = prompt('Description de la personne (ex: Mon frère, surnom Toto) :', current === 'Aucune description' ? '' : current || '');
   if (description === null) return;
   await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/description`, {
@@ -715,11 +987,14 @@ async function editClusterDescription(clusterId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ description: description.trim() || null })
   });
-  const el = document.getElementById('cluster-description-display');
-  if (el) {
-    el.textContent = description.trim() || 'Aucune description';
-    el.style.color = description.trim() ? '#555' : '#999';
-    el.style.fontStyle = description.trim() ? 'italic' : 'normal';
+  if (inlineEl) {
+    inlineEl.textContent = description.trim() || '';
+    inlineEl.style.display = description.trim() ? '' : 'none';
+  }
+  if (legacyEl) {
+    legacyEl.textContent = description.trim() || 'Aucune description';
+    legacyEl.style.color = description.trim() ? '#555' : '#999';
+    legacyEl.style.fontStyle = description.trim() ? 'italic' : 'normal';
   }
   loadClusters();
 }
@@ -736,43 +1011,78 @@ window.removeFaceFromCluster = removeFaceFromCluster;
 async function moveFaceToCluster(fromClusterId, faceId) {
   const res = await apiFetch(`${API_BASE}/faces/clusters`);
   const clusters = await res.json();
-  const others = clusters.filter(c => c.person_cluster_id !== fromClusterId);
-  if (others.length === 0) { alert('No other clusters to move to.'); return; }
+  const named = clusters.filter(c => c.person_cluster_id !== fromClusterId && c.cluster_name);
+  if (named.length === 0) { alert('No named clusters to move to.'); return; }
 
-  const options = others.map((c, i) => `${i + 1}. ${c.cluster_name || c.person_cluster_id.substring(0, 6)} (${c.face_count} faces)`).join('\n');
-  const input = prompt(`Move face to which cluster?\n${options}`);
-  if (!input) return;
-  const idx = parseInt(input) - 1;
-  if (idx < 0 || idx >= others.length) { alert('Invalid selection'); return; }
-
-  const targetId = others[idx].person_cluster_id;
-  await apiFetch(`${API_BASE}/faces/${faceId}/cluster`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clusterId: targetId })
+  showMergeModalList(named, async (targetId) => {
+    await apiFetch(`${API_BASE}/faces/${faceId}/cluster`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clusterId: targetId })
+    });
+    openClusterDetail(fromClusterId);
+    loadClusters();
   });
-  openClusterDetail(fromClusterId);
-  loadClusters();
 }
 window.moveFaceToCluster = moveFaceToCluster;
 
 async function showMergeDialog(clusterId) {
   const res = await apiFetch(`${API_BASE}/faces/clusters`);
   const clusters = await res.json();
-  const others = clusters.filter(c => c.person_cluster_id !== clusterId);
-  if (others.length === 0) { alert('No other clusters to merge with.'); return; }
+  const named = clusters.filter(c => c.person_cluster_id !== clusterId && c.cluster_name);
+  if (named.length === 0) { alert('No named clusters to merge with.'); return; }
 
-  const options = others.map((c, i) => `${i + 1}. ${c.cluster_name || c.person_cluster_id.substring(0, 6)} (${c.face_count} faces)`).join('\n');
-  const input = prompt(`Merge into which cluster? Enter number:\n${options}`);
-  if (!input) return;
-  const idx = parseInt(input) - 1;
-  if (idx < 0 || idx >= others.length) { alert('Invalid selection'); return; }
-
-  await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/merge/${others[idx].person_cluster_id}`, { method: 'POST' });
-  closeClustersModal();
-  loadClusters();
+  showMergeModalList(named, async (targetClusterId) => {
+    await apiFetch(`${API_BASE}/faces/clusters/${clusterId}/merge/${targetClusterId}`, { method: 'POST' });
+    closeClustersModal();
+    loadClusters();
+  });
 }
 window.showMergeDialog = showMergeDialog;
+
+function showMergeModalList(clusters, onSelect) {
+  const modal = document.getElementById('merge-modal');
+  const list = document.getElementById('merge-list');
+  list.innerHTML = clusters.map(c => `
+    <div class="merge-item" onclick="selectMergeItem('${c.person_cluster_id}')"
+      style="display:flex;align-items:center;gap:12px;padding:10px;cursor:pointer;border-radius:6px;margin-bottom:4px;background:#1e1e1e;">
+      ${c.thumbnail ? `<img src="data:image/jpeg;base64,${c.thumbnail}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;">` : `<div style="width:40px;height:40px;background:#333;border-radius:4px;"></div>`}
+      <div>
+        <div style="font-weight:600;">${c.cluster_name}</div>
+        <div style="font-size:0.8em;color:#888;">${c.face_count} faces · ${c.photo_count} photos</div>
+      </div>
+    </div>
+  `).join('');
+  window._mergeModalCallback = onSelect;
+  modal.classList.remove('hidden');
+}
+window.showMergeModalList = showMergeModalList;
+
+window.selectMergeItem = function(clusterId) {
+  const modal = document.getElementById('merge-modal');
+  modal.classList.add('hidden');
+  if (window._mergeModalCallback) {
+    window._mergeModalCallback(clusterId);
+    window._mergeModalCallback = null;
+  }
+};
+
+window.closeMergeModal = function() {
+  document.getElementById('merge-modal').classList.add('hidden');
+  window._mergeModalCallback = null;
+};
+
+function showMergeModalForFace(faceId, clusters) {
+  showMergeModalList(clusters, async (clusterId) => {
+    await apiFetch(`${API_BASE}/faces/${faceId}/cluster`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clusterId })
+    });
+    loadClusters();
+  });
+}
+window.showMergeModalForFace = showMergeModalForFace;
 
 function closeClustersModal() {
   clusterModal.classList.add('hidden');
